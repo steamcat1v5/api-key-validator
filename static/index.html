@@ -462,13 +462,25 @@ function copyKey(name) {
   const p = providersData.find(x => x.name === name);
   const key = p ? (p.api_key || '') : '';
   if (!key) { showToast('⚠️ 无 Key 可复制', 'error'); return; }
-  navigator.clipboard.writeText(key).then(() => showToast('📋 已复制 API Key', 'success')).catch(() => showToast('❌ 复制失败', 'error'));
+  // fallback: 使用 textarea 复制，兼容非 HTTPS 环境
+  const ta = document.createElement('textarea');
+  ta.value = key;
+  ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('📋 已复制 API Key', 'success');
+  } catch(e) {
+    showToast('❌ 复制失败，请手动选择复制', 'error');
+  }
+  document.body.removeChild(ta);
 }
 
 function showToast(msg, type='success') {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = `toast show ${type}`;
-  setTimeout(() => t.className = 'toast', 2500);
+  setTimeout(() => t.className = 'toast', 3000);
 }
 
 init();
