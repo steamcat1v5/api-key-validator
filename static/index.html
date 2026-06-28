@@ -262,30 +262,28 @@ function renderDetail() {
       <span class="type-badge">${p.type || 'openai'}</span>
     </div>
     <div class="detail-body">
-      <div class="form-row">
-        <div class="form-group" style="flex:1.5">
-          <label>名称</label>
-          <input value="${esc(p.name||'')}" onchange="updField(${selectedIdx},'name',this.value)">
-        </div>
-        <div class="form-group" style="flex:0 0 130px">
-          <label>协议</label>
-          <select onchange="updField(${selectedIdx},'type',this.value)">
-            <option value="openai" ${p.type==='openai'?'selected':''}>OpenAI 协议</option>
-            <option value="anthropic" ${p.type==='anthropic'?'selected':''}>Anthropic 协议</option>
-          </select>
-        </div>
+      <div class="form-group">
+        <label>名称</label>
+        <input value="${esc(p.name||'')}" onchange="updField(${selectedIdx},'name',this.value)">
+      </div>
+      <div class="form-group">
+        <label>来源网址</label>
+        <input value="${esc(p.source_url||'')}" onchange="updField(${selectedIdx},'source_url',this.value)" placeholder="https://example.com/get-api">
       </div>
       <div class="form-group">
         <label>Base URL</label>
         <input value="${esc(p.base_url||'')}" onchange="updField(${selectedIdx},'base_url',this.value)">
       </div>
       <div class="form-group">
-        <label>API Key</label>
-        <input class="key-input" type="password" value="${esc(p.api_key_masked||p.api_key||'')}" onchange="updField(${selectedIdx},'api_key',this.value)" placeholder="sk-xxx / tp-xxx">
+        <label>协议</label>
+        <select onchange="updField(${selectedIdx},'type',this.value)">
+          <option value="openai" ${p.type==='openai'?'selected':''}>OpenAI 协议</option>
+          <option value="anthropic" ${p.type==='anthropic'?'selected':''}>Anthropic 协议</option>
+        </select>
       </div>
       <div class="form-group">
-        <label>来源网址</label>
-        <input value="${esc(p.source_url||'')}" onchange="updField(${selectedIdx},'source_url',this.value)" placeholder="https://example.com/get-api">
+        <label>API Key</label>
+        <input class="key-input" type="password" value="${esc(p.api_key_masked||p.api_key||'')}" onchange="updField(${selectedIdx},'api_key',this.value)" placeholder="sk-xxx / tp-xxx">
       </div>
       ${modelArea}
       ${resultArea}
