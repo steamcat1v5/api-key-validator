@@ -22,8 +22,9 @@ def load_config():
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
         cfg["providers"] = providers
+        cfg.setdefault("stream", False)
         return cfg
-    return {"providers": []}
+    return {"providers": [], "stream": False}
 
 
 def save_config(cfg):
@@ -221,7 +222,7 @@ async def handle_index(request):
 async def handle_get_config(request):
     cfg = load_config()
     providers = cfg.get("providers", [])
-    return web.json_response({"providers": providers})
+    return web.json_response({"providers": providers, "stream": cfg.get("stream", False)})
 
 
 async def handle_save_config(request):
@@ -246,7 +247,7 @@ async def handle_save_config(request):
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
         })
-    save_config({"providers": merged})
+    save_config({"providers": merged, "stream": body.get("stream", False)})
     return web.json_response({"ok": True})
 
 
@@ -380,6 +381,16 @@ async def handle_select_model(request):
     return web.json_response({"ok": True, "selected_model": model})
 
 
+async def handle_stream(request):
+    """保存 stream 设置"""
+    body = await request.json()
+    stream = body.get("stream", False)
+    cfg = load_config()
+    cfg["stream"] = stream
+    save_config(cfg)
+    return web.json_response({"ok": True, "stream": stream})
+
+
 app = web.Application()
 app.router.add_get("/", handle_index)
 app.router.add_get("/api/config", handle_get_config)
@@ -389,6 +400,7 @@ app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/select-model", handle_select_model)
+app.router.add_post("/api/stream", handle_stream)
 
 if __name__ == "__main__":
     print("🐱 API Key Validator 启动在 http://0.0.0.0:8899")

@@ -170,7 +170,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
     <button class="btn btn-fetch" onclick="fetchAllModels()">📡 批量获取模型</button>
     <button class="btn btn-primary" onclick="validateAll()">🔍 批量验证</button>
     <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer">
-      <input type="checkbox" id="chkStream"> stream
+      <input type="checkbox" id="chkStream" onchange="saveStreamSetting()"> stream
     </label>
     <button class="btn btn-secondary" onclick="clearLogs()">🗑️ 清空日志</button>
   </div>
@@ -203,8 +203,11 @@ let validateResults = {}; // name -> result
 let busy = false;
 
 async function init() {
+  // 恢复 stream 勾选状态
+  const chk = document.getElementById('chkStream');
   const resp = await fetch(`${API}/api/config`);
   const data = await resp.json();
+  if (chk && data.stream) chk.checked = true;
   providersData = data.providers || [];
   if (providersData.length > 0) selectedIdx = 0;
   renderAll();
@@ -509,6 +512,13 @@ function clearLogs() { logEntries = []; renderLog(); }
 
 // ─── 工具 ─────────────────
 function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
+
+async function saveStreamSetting() {
+  const stream = document.getElementById('chkStream').checked;
+  try {
+    await fetch(`${API}/api/stream`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ stream }) });
+  } catch(e) {}
+}
 
 function copyKey(name) {
   const p = providersData.find(x => x.name === name);
