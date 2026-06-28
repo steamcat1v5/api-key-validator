@@ -289,7 +289,10 @@ function renderDetail() {
       </div>
       <div class="form-group">
         <label>API Key</label>
-        <input class="key-input" type="password" value="${esc(p.api_key_masked||p.api_key||'')}" onchange="updField(${selectedIdx},'api_key',this.value)" placeholder="sk-xxx / tp-xxx">
+        <div style="display:flex;gap:6px;align-items:center">
+          <input class="key-input" style="flex:1" value="${esc(p.api_key||'')}" onchange="updField(${selectedIdx},'api_key',this.value)" placeholder="sk-xxx / tp-xxx">
+          <button class="btn btn-secondary" style="flex-shrink:0;padding:6px 8px;font-size:12px" onclick="copyKey('${esc(p.name)}')" title="复制">📋</button>
+        </div>
       </div>
       ${modelArea}
       ${resultArea}
@@ -308,7 +311,7 @@ function esc(s) { return (s||'').replace(/&/g,'&').replace(/"/g,'"').replace(/</
 function selectProvider(i) { selectedIdx = i; renderAll(); }
 
 function addProvider() {
-  providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', api_key_masked: '', models: [], selected_model: '', source_url: '' });
+  providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', models: [], selected_model: '', source_url: '' });
   selectedIdx = providersData.length - 1;
   renderAll();
 }
@@ -454,6 +457,13 @@ function clearLogs() { logEntries = []; renderLog(); }
 
 // ─── 工具 ─────────────────
 function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
+
+function copyKey(name) {
+  const p = providersData.find(x => x.name === name);
+  const key = p ? (p.api_key || '') : '';
+  if (!key) { showToast('⚠️ 无 Key 可复制', 'error'); return; }
+  navigator.clipboard.writeText(key).then(() => showToast('📋 已复制 API Key', 'success')).catch(() => showToast('❌ 复制失败', 'error'));
+}
 
 function showToast(msg, type='success') {
   const t = document.getElementById('toast');

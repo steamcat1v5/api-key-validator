@@ -221,12 +221,7 @@ async def handle_index(request):
 async def handle_get_config(request):
     cfg = load_config()
     providers = cfg.get("providers", [])
-    safe = []
-    for p in providers:
-        item = {k: v for k, v in p.items() if k != "api_key"}
-        item["api_key_masked"] = mask_key(p.get("api_key", ""))
-        safe.append(item)
-    return web.json_response({"providers": safe})
+    return web.json_response({"providers": providers})
 
 
 async def handle_save_config(request):
