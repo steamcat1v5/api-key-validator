@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🔑 API Key Validator</title>
+<style>
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2d3146;
+  --border: #2e3345; --text: #e1e4ed; --text2: #8b8fa3;
+  --accent: #6c5ce7; --accent2: #a29bfe;
+  --green: #00cec9; --red: #ff6b6b; --orange: #ffa502; --blue: #74b9ff; --yellow: #fdcb6e;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, 'SF Pro', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display:flex; align-items:center; gap: 12px; }
+header h1 { font-size: 18px; font-weight: 600; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 500; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 16px 20px; }
+
+/* ─── 工具栏 ─── */
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.btn {
+  padding: 6px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 500;
+  border: none; cursor: pointer; transition: all 0.15s;
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+}
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent2); }
+.btn-secondary { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.btn-save { background: #00cec922; color: var(--green); border: 1px solid #00cec944; }
+.btn-save:hover:not(:disabled) { background: #00cec944; }
+.btn-danger { background: #e74c3c22; color: var(--red); }
+.btn-danger:hover:not(:disabled) { background: #e74c3c44; }
+.btn-fetch { background: #74b9ff22; color: var(--blue); border: 1px solid #74b9ff44; }
+.btn-fetch:hover:not(:disabled) { background: #74b9ff44; }
+
+/* ─── 布局 ─── */
+.main-layout { display: flex; gap: 16px; }
+.list-panel { width: 260px; flex-shrink: 0; }
+.detail-panel { flex: 1; min-width: 0; }
+
+/* ─── Provider 列表 ─── */
+.list-panel h3 { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.provider-item {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 6px; cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; gap: 8px;
+}
+.provider-item:hover { border-color: var(--accent); }
+.provider-item.active { border-color: var(--accent); background: var(--surface2); }
+.provider-item .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.available,.dot.valid { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.dot.invalid,.dot.auth_error,.dot.not_supported { background: var(--red); box-shadow: 0 0 4px var(--red); }
+.dot.rate_limited { background: var(--orange); box-shadow: 0 0 4px var(--orange); }
+.dot.error,.dot.timeout { background: var(--orange); }
+.dot.idle { background: var(--text2); opacity: 0.3; }
+.dot.no_model { background: var(--text2); opacity: 0.5; }
+.provider-item .p-name { font-size: 13px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-item .p-type { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--surface3); color: var(--text2); }
+.provider-item .p-status { font-size: 11px; color: var(--text2); }
+
+/* ─── 详情卡片 ─── */
+.detail-empty { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 50px 20px; text-align: center; color: var(--text2); }
+.detail-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.detail-header { padding: 12px 16px; background: var(--surface2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; gap-wrap: wrap; }
+.detail-header h2 { font-size: 15px; font-weight: 600; flex: 1; }
+.type-badge { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: var(--accent); color: #fff; }
+.detail-body { padding: 14px 16px; }
+.detail-actions { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ─── 表单 ─── */
+.form-group { margin-bottom: 10px; }
+.form-group label { display: block; font-size: 11px; font-weight: 600; color: var(--text2); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.3px; }
+.form-row { display: flex; gap: 10px; }
+.form-row .form-group { flex: 1; }
+input, select {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%; transition: border-color 0.15s;
+}
+input:focus, select:focus { border-color: var(--accent); }
+input.key-input { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+
+/* ─── 模型选择 ─── */
+.model-select-area {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin-bottom: 10px;
+}
+.model-select-area .area-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.model-select-area .area-title .count { color: var(--accent); }
+select.model-select { width: 100%; padding: 8px 10px; font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace; }
+
+/* ─── 验证结果 ─── */
+.validate-result {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 10px;
+}
+.validate-result .vr-row { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.validate-result .vr-label { font-size: 12px; color: var(--text2); margin-top: 8px; margin-bottom: 2px; }
+.validate-result .vr-content { background: var(--surface3); border-radius: 4px; padding: 6px 10px; font-size: 13px; color: var(--text); max-height: 120px; overflow-y: auto; word-break: break-all; }
+.validate-result .vr-usage { font-size: 12px; color: var(--text2); margin-top: 6px; }
+
+/* ─── 日志 ─── */
+.log-panel { background: #0c0e14; border: 1px solid var(--border); border-radius: 8px; margin-top: 16px; overflow: hidden; }
+.log-header { padding: 8px 14px; background: var(--surface2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text2); }
+.log-body { padding: 10px 14px; max-height: 400px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11.5px; line-height: 1.65; }
+.log-body::-webkit-scrollbar { width: 5px; }
+.log-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.log-entry { margin-bottom: 3px; }
+.log-time { color: var(--text2); margin-right: 6px; }
+.log-method { font-weight: 700; margin-right: 4px; }
+.log-method.GET { color: var(--green); }
+.log-method.POST { color: var(--blue); }
+.log-url { color: var(--text); word-break: break-all; }
+.log-status { font-weight: 700; margin-left: 6px; }
+.log-status.s2xx { color: var(--green); }
+.log-status.s4xx { color: var(--orange); }
+.log-status.s5xx { color: var(--red); }
+.log-status.s0 { color: var(--text2); }
+.log-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 8px 12px; margin: 4px 0 8px 20px; font-size: 11px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text2); }
+.log-provider-tag { display: inline-block; background: var(--accent); color: #fff; font-size: 9.5px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; font-weight: 500; }
+
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s; z-index: 999; }
+.toast.show { opacity: 1; }
+.toast.success { background: #00cec933; color: var(--green); border: 1px solid #00cec944; }
+.toast.error { background: #ff6b6b33; color: var(--red); border: 1px solid #ff6b6b44; }
+
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 768px) { .main-layout { flex-direction: column; } .list-panel { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>🔑</span> API Key Validator <span class="badge">v2.0</span></h1>
+</header>
+
+<div class="container">
+  <div class="toolbar">
+    <button class="btn btn-secondary" onclick="addProvider()">➕ 添加</button>
+    <button class="btn btn-save" onclick="saveConfig()">💾 保存全部</button>
+    <button class="btn btn-fetch" onclick="fetchAllModels()">📡 批量获取模型</button>
+    <button class="btn btn-primary" onclick="validateAll()">🔍 批量验证</button>
+    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer">
+      <input type="checkbox" id="chkStream"> stream
+    </label>
+    <button class="btn btn-secondary" onclick="clearLogs()">🗑️ 清空日志</button>
+  </div>
+
+  <div class="main-layout">
+    <div class="list-panel">
+      <h3>📡 Providers</h3>
+      <div id="providerList"></div>
+    </div>
+    <div class="detail-panel">
+      <div id="detailContent">
+        <div class="detail-empty"><p>👈 选择或添加一个 Provider</p></div>
+      </div>
+      <div class="log-panel">
+        <div class="log-header">📋 请求日志</div>
+        <div class="log-body" id="logBody"><span style="color:var(--text2);font-style:italic">等待操作...</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let providersData = [];
+let selectedIdx = -1;
+let logEntries = [];
+let validateResults = {}; // name -> result
+let busy = false;
+
+async function init() {
+  const resp = await fetch(`${API}/api/config`);
+  const data = await resp.json();
+  providersData = data.providers || [];
+  if (providersData.length > 0) selectedIdx = 0;
+  renderAll();
+}
+
+function renderAll() { renderList(); renderDetail(); }
+
+// ─── 列表 ─────────────────
+function renderList() {
+  const el = document.getElementById('providerList');
+  if (providersData.length === 0) {
+    el.innerHTML = '<div style="text-align:center;color:var(--text2);padding:16px;font-size:12px">暂无 Provider<br>点击「➕ 添加」</div>';
+    return;
+  }
+  el.innerHTML = providersData.map((p, i) => {
+    const r = validateResults[p.name];
+    const dotClass = r ? (r.status || 'idle') : (p.selected_model ? 'idle' : 'no_model');
+    const modelInfo = p.models && p.models.length ? `${p.models.length} 模型` : '未获取';
+    return `<div class="provider-item ${i === selectedIdx ? 'active' : ''}" onclick="selectProvider(${i})">
+      <span class="dot ${dotClass}"></span>
+      <span class="p-name">${esc(p.name || '未命名')}</span>
+      <span class="p-status">${modelInfo}</span>
+      <span class="p-type">${p.type || 'openai'}</span>
+    </div>`;
+  }).join('');
+}
+
+// ─── 详情 ─────────────────
+function renderDetail() {
+  const el = document.getElementById('detailContent');
+  if (selectedIdx < 0 || selectedIdx >= providersData.length) {
+    el.innerHTML = '<div class="detail-empty"><p>👈 选择或添加一个 Provider</p></div>';
+    return;
+  }
+  const p = providersData[selectedIdx];
+  const r = validateResults[p.name];
+  const hasModels = p.models && p.models.length > 0;
+  const stream = document.getElementById('chkStream').checked;
+
+  // 模型选择区
+  let modelArea = '';
+  if (hasModels) {
+    modelArea = `<div class="model-select-area">
+      <div class="area-title">已获取 <span class="count">${p.models.length}</span> 个模型</div>
+      <select class="model-select" onchange="selectModel('${esc(p.name)}', this.value)">
+        ${p.models.map(m => `<option value="${esc(m)}" ${m === p.selected_model ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+      </select>
+    </div>`;
+  } else {
+    modelArea = `<div class="model-select-area">
+      <div class="area-title" style="color:var(--text2)">尚未获取模型列表</div>
+      <div style="font-size:12px;color:var(--text2)">点击「📡 获取模型」按钮获取</div>
+    </div>`;
+  }
+
+  // 验证结果
+  let resultArea = '';
+  if (r) {
+    const statusLabel = {available:'✅ 可用',rate_limited:'⚠️ 限速',auth_error:'❌ 鉴权失败',not_supported:'❌ 模型不支持',timeout:'⏱ 超时',error:'⚠️ 错误',no_model:'⚠️ 未选模型'}[r.status]||r.status;
+    const statusColor = r.status === 'available' ? 'var(--green)' : (r.status === 'rate_limited' ? 'var(--orange)' : 'var(--red)');
+    resultArea = `<div class="validate-result">
+      <div class="vr-row">
+        <span class="dot ${r.status}" style="width:9px;height:9px"></span>
+        <strong style="color:${statusColor}">${statusLabel}</strong>
+        ${r.model ? `<span style="font-size:12px;color:var(--text2);margin-left:4px">${esc(r.model)}</span>` : ''}
+        ${r.error ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
+      </div>
+      ${r.content ? `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>` : ''}
+      ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `<div class="vr-usage">📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}</div>` : ''}
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="detail-card">
+    <div class="detail-header">
+      <span class="dot ${r ? r.status : (p.selected_model ? 'idle' : 'no_model')}" style="width:8px;height:8px"></span>
+      <h2>${esc(p.name || '未命名')}</h2>
+      <span class="type-badge">${p.type || 'openai'}</span>
+    </div>
+    <div class="detail-body">
+      <div class="form-row">
+        <div class="form-group" style="flex:1.5">
+          <label>名称</label>
+          <input value="${esc(p.name||'')}" onchange="updField(${selectedIdx},'name',this.value)">
+        </div>
+        <div class="form-group" style="flex:0 0 130px">
+          <label>协议</label>
+          <select onchange="updField(${selectedIdx},'type',this.value)">
+            <option value="openai" ${p.type==='openai'?'selected':''}>OpenAI 协议</option>
+            <option value="anthropic" ${p.type==='anthropic'?'selected':''}>Anthropic 协议</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Base URL</label>
+        <input value="${esc(p.base_url||'')}" onchange="updField(${selectedIdx},'base_url',this.value)">
+      </div>
+      <div class="form-group">
+        <label>API Key</label>
+        <input class="key-input" type="password" value="${esc(p.api_key_masked||p.api_key||'')}" onchange="updField(${selectedIdx},'api_key',this.value)" placeholder="sk-xxx / tp-xxx">
+      </div>
+      ${modelArea}
+      ${resultArea}
+    </div>
+    <div class="detail-actions">
+      <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busy?'disabled':''}>📡 获取模型</button>
+      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busy || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
+      <button class="btn btn-danger" onclick="rmProvider(${selectedIdx})">✕ 删除</button>
+    </div>
+  </div>`;
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>'); }
+
+// ─── 操作 ─────────────────
+function selectProvider(i) { selectedIdx = i; renderAll(); }
+
+function addProvider() {
+  providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', api_key_masked: '', models: [], selected_model: '' });
+  selectedIdx = providersData.length - 1;
+  renderAll();
+}
+
+function rmProvider(i) {
+  const name = providersData[i].name;
+  providersData.splice(i, 1);
+  if (validateResults[name]) delete validateResults[name];
+  if (selectedIdx >= providersData.length) selectedIdx = providersData.length - 1;
+  renderAll();
+}
+
+function updField(i, k, v) {
+  if (k === 'name' && providersData[i].name && providersData[i].name !== v) {
+    if (validateResults[providersData[i].name]) {
+      validateResults[v] = validateResults[providersData[i].name];
+      delete validateResults[providersData[i].name];
+    }
+  }
+  providersData[i][k] = v;
+  if (k === 'name') renderList();
+}
+
+// ─── 保存配置 ─────────────────
+async function saveConfig() {
+  const payload = { providers: providersData.map(p => ({
+    name: p.name, type: p.type||'openai', base_url: p.base_url,
+    api_key: p.api_key||'', models: p.models||[], selected_model: p.selected_model||''
+  }))};
+  const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const data = await resp.json();
+  showToast(data.ok ? '✅ 配置已保存' : '❌ 保存失败', data.ok ? 'success' : 'error');
+}
+
+// ─── 获取模型列表 ─────────────────
+async function fetchModels(name) {
+  setBusy(true);
+  try {
+    const resp = await fetch(`${API}/api/fetch-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+    const data = await resp.json();
+    if (data.logs) data.logs.forEach(l => addLogEntry(l));
+    if (data.ok) {
+      const p = providersData.find(x => x.name === name);
+      if (p) { p.models = data.models; p.selected_model = data.selected_model; }
+      showToast(`📡 ${name}: 获取到 ${data.models.length} 个模型`, 'success');
+    } else {
+      showToast(`❌ ${name}: ${data.error}`, 'error');
+    }
+    renderAll();
+  } catch(e) { showToast('❌ 请求失败: ' + e.message, 'error'); }
+  setBusy(false);
+}
+
+async function fetchAllModels() {
+  setBusy(true);
+  try {
+    const resp = await fetch(`${API}/api/fetch-all-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
+    const data = await resp.json();
+    if (data.logs) data.logs.forEach(l => addLogEntry(l));
+    data.results.forEach(r => {
+      if (r.ok) {
+        const p = providersData.find(x => x.name === r.name);
+        if (p) { p.models = r.models; p.selected_model = r.selected_model; }
+      }
+    });
+    showToast(`📡 批量获取完成`, 'success');
+    renderAll();
+  } catch(e) { showToast('❌ 请求失败: ' + e.message, 'error'); }
+  setBusy(false);
+}
+
+async function selectModel(name, model) {
+  try {
+    await fetch(`${API}/api/select-model`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, model }) });
+    const p = providersData.find(x => x.name === name);
+    if (p) p.selected_model = model;
+    renderAll();
+  } catch(e) {}
+}
+
+// ─── 验证 ─────────────────
+async function validateSingle(name) {
+  setBusy(true);
+  const stream = document.getElementById('chkStream').checked;
+  try {
+    const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, stream }) });
+    const data = await resp.json();
+    if (data.logs) data.logs.forEach(l => addLogEntry(l));
+    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream };
+    renderAll();
+  } catch(e) { showToast('❌ 验证失败: ' + e.message, 'error'); }
+  setBusy(false);
+}
+
+async function validateAll() {
+  setBusy(true);
+  const stream = document.getElementById('chkStream').checked;
+  try {
+    const resp = await fetch(`${API}/api/validate-all`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ stream }) });
+    const data = await resp.json();
+    if (data.logs) data.logs.forEach(l => addLogEntry(l));
+    data.results.forEach(r => {
+      validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream };
+    });
+    renderAll();
+  } catch(e) { showToast('❌ 批量验证失败: ' + e.message, 'error'); }
+  setBusy(false);
+}
+
+// ─── 日志 ─────────────────
+function addLogEntry(l) {
+  if (!l) return;
+  const now = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+  logEntries.push({ time: now, ...l });
+  renderLog();
+}
+
+function renderLog() {
+  const el = document.getElementById('logBody');
+  if (logEntries.length === 0) { el.innerHTML = '<span style="color:var(--text2);font-style:italic">等待操作...</span>'; return; }
+  el.innerHTML = logEntries.map(e => {
+    const s = parseInt(e.status) || 0;
+    const sc = s >= 200 && s < 300 ? 's2xx' : s >= 400 && s < 500 ? 's4xx' : s >= 500 ? 's5xx' : 's0';
+    const mc = (e.method || 'GET').toUpperCase();
+    return `<div class="log-entry">
+      <span class="log-time">${e.time}</span>
+      ${e.provider ? `<span class="log-provider-tag">${esc(e.provider)}</span>` : ''}
+      <span class="log-method ${mc}">${mc}</span>
+      <span class="log-url">${esc(e.url)}</span>
+      ${e.status ? `<span class="log-status ${sc}">${e.status}</span>` : ''}
+      ${e.detail ? `<div class="log-detail">${esc(e.detail)}</div>` : ''}
+    </div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearLogs() { logEntries = []; renderLog(); }
+
+// ─── 工具 ─────────────────
+function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
+
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = `toast show ${type}`;
+  setTimeout(() => t.className = 'toast', 2500);
+}
+
+init();
+</script>
+</body>
+</html>
