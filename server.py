@@ -16,10 +16,12 @@ def load_config():
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
-        # 确保 every provider 有 models 和 selected_model 字段
-        for p in cfg.get("providers", []):
+        providers = cfg.get("providers", [])
+        for p in providers:
             p.setdefault("models", [])
             p.setdefault("selected_model", "")
+            p.setdefault("source_url", "")
+        cfg["providers"] = providers
         return cfg
     return {"providers": []}
 
@@ -247,6 +249,7 @@ async def handle_save_config(request):
             "api_key": key,
             "models": p.get("models", []),
             "selected_model": p.get("selected_model", ""),
+            "source_url": p.get("source_url", ""),
         })
     save_config({"providers": merged})
     return web.json_response({"ok": True})
