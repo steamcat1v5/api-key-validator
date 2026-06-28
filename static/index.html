@@ -93,6 +93,7 @@ input.key-input { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12p
 .model-select-area .area-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
 .model-select-area .area-title .count { color: var(--accent); }
 select.model-select { width: 100%; padding: 8px 10px; font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace; }
+input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace; }
 
 /* ─── 验证结果 ─── */
 .validate-result {
@@ -223,20 +224,25 @@ function renderDetail() {
   const stream = document.getElementById('chkStream').checked;
 
   // 模型选择区
-  let modelArea = '';
-  if (hasModels) {
-    modelArea = `<div class="model-select-area">
-      <div class="area-title">已获取 <span class="count">${p.models.length}</span> 个模型</div>
-      <select class="model-select" onchange="selectModel('${esc(p.name)}', this.value)">
-        ${p.models.map(m => `<option value="${esc(m)}" ${m === p.selected_model ? 'selected' : ''}>${esc(m)}</option>`).join('')}
-      </select>
-    </div>`;
-  } else {
-    modelArea = `<div class="model-select-area">
-      <div class="area-title" style="color:var(--text2)">尚未获取模型列表</div>
-      <div style="font-size:12px;color:var(--text2)">点击「📡 获取模型」按钮获取</div>
-    </div>`;
-  }
+  const currentModel = p.selected_model || '';
+  const modelInputValue = esc(currentModel);
+  const modelName = esc(p.name);
+  const datalistId = `dl-models-${selectedIdx}`;
+  const hasOptions = p.models && p.models.length > 0;
+  const modelHint = hasModels
+    ? `已获取 <span class="count">${p.models.length}</span> 个模型`
+    : '输入模型名或点击「📡 获取模型」';
+
+  let modelArea = `<div class="model-select-area">
+    <div class="area-title">${modelHint}</div>
+    <input list="${datalistId}" class="model-input" value="${modelInputValue}"
+      onchange="onModelInput('${modelName}', this.value)"
+      onblur="onModelInput('${modelName}', this.value)"
+      placeholder="输入或选择模型名称">
+    ${hasOptions ? `<datalist id="${datalistId}">
+      ${p.models.map(m => `<option value="${esc(m)}">`).join('')}
+    </datalist>` : ''}
+  </div>`;
 
   // 验证结果
   let resultArea = '';
@@ -375,13 +381,17 @@ async function fetchAllModels() {
   setBusy(false);
 }
 
-async function selectModel(name, model) {
-  try {
-    await fetch(`${API}/api/select-model`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, model }) });
-    const p = providersData.find(x => x.name === name);
-    if (p) p.selected_model = model;
+async function onModelInput(name, value) {
+  const model = (value || '').trim();
+  if (!model) return;
+  const p = providersData.find(x => x.name === name);
+  if (p && p.selected_model !== model) {
+    p.selected_model = model;
+    try {
+      await fetch(`${API}/api/select-model`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, model }) });
+    } catch(e) {}
     renderAll();
-  } catch(e) {}
+  }
 }
 
 // ─── 验证 ─────────────────
