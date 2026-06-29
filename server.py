@@ -99,17 +99,21 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
             elapsed = time.time() - start
             body = await resp.text()
             status = resp.status
+            body_json = None
             try:
                 body_json = json.loads(body)
                 resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{fmt_json(body_json)}"
-            except:
+            except Exception:
                 resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{body[:500]}"
 
         log = {"provider": provider_name, "method": "GET", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
 
         if status == 200:
-            models = sorted([m["id"] for m in body_json.get("data", [])])
-            return {"ok": True, "models": models, "log": log}
+            if body_json and "data" in body_json:
+                models = sorted([m["id"] for m in body_json.get("data", [])])
+                return {"ok": True, "models": models, "log": log}
+            else:
+                return {"ok": False, "error": "响应格式异常：缺少 data 字段", "models": [], "log": log}
         elif status == 401:
             return {"ok": False, "error": "Invalid API Key", "models": [], "log": log}
         else:
@@ -159,19 +163,22 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                                 "stream": True, "usage": usage,
                                 "log": log,
                             }
-                        except:
+                        except Exception:
                             pass
                 return {"ok": True, "status": "available", "model": model, "stream": True, "log": log}
             else:
+                body_json = None
                 try:
                     body_json = json.loads(body)
                     resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{fmt_json(body_json)}"
-                except:
+                except Exception:
                     resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{body[:500]}"
 
                 log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
 
                 if status == 200:
+                    if not isinstance(body_json, dict):
+                        return {"ok": False, "status": "error", "model": model, "error": "响应格式异常", "log": log}
                     usage = body_json.get("usage", {})
                     content = ""
                     choices = body_json.get("choices", [])
@@ -214,15 +221,18 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name):
             elapsed = time.time() - start
             body = await resp.text()
             status = resp.status
+            body_json = None
             try:
                 body_json = json.loads(body)
                 resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{fmt_json(body_json)}"
-            except:
+            except Exception:
                 resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{body[:500]}"
 
             log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
 
             if status == 200:
+                if not isinstance(body_json, dict):
+                    return {"ok": False, "status": "error", "model": model, "error": "响应格式异常", "log": log}
                 usage = body_json.get("usage", {})
                 content = ""
                 content_arr = body_json.get("content", [])
