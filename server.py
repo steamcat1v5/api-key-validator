@@ -275,27 +275,55 @@ async def handle_save_config(request):
 
 
 async def handle_fetch_models(request):
-    """获取单个 provider 的模型列表并保存到 config"""
+    """获取单个 provider 的模型列表并保存到 config
+    
+    前端可以只传 name（从 config 查找），也可以传完整的 provider 信息（新增未保存时）
+    """
     body = await request.json()
     name = body.get("name")
+    base_url = body.get("base_url", "")
+    api_key = body.get("api_key", "")
+    ptype = body.get("type", "openai")
+
+    # 优先用前端传来的完整信息，凑不齐再从 config 查
     cfg = load_config()
     providers = cfg.get("providers", [])
     provider = next((p for p in providers if p["name"] == name), None)
-    if not provider:
-        return web.json_response({"error": "provider not found"}, status=404)
+
+    if not provider and not (base_url and api_key):
+        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_key)"}, status=404)
+
+    # 合并：config 里的作为基础，前端传来的字段覆盖
+    if provider:
+        base_url = base_url or provider.get("base_url", "")
+        api_key = api_key or provider.get("api_key", "")
+        ptype = ptype if ptype != "openai" or provider.get("type") else provider.get("type", "openai")
+    else:
+        # 新 provider 不在 config 中，先插入到 config 以便后续保存模型列表
+        provider = {"name": name, "type": ptype, "base_url": base_url, "api_key": api_key,
+                     "models": [], "selected_model": "", "source_url": body.get("source_url", "")}
+        providers.append(provider)
+        cfg["providers"] = providers
+
+    # key 脱敏还原：如果前端传来带 *** 的 key，从 config 里取真实值
+    if "***" in api_key and provider:
+        api_key = provider.get("api_key", api_key)
 
     logs = []
     async with aiohttp.ClientSession() as session:
-        if provider["type"] == "openai":
-            result = await fetch_models_openai(session, provider["base_url"], provider["api_key"], name)
+        if ptype == "openai":
+            result = await fetch_models_openai(session, base_url, api_key, name)
             logs.append(result["log"])
             if result["ok"]:
-                provider["models"] = result["models"]
-                # 自动选第一个（如果当前选择不在列表中）
-                if not provider.get("selected_model") or provider["selected_model"] not in result["models"]:
-                    provider["selected_model"] = result["models"][0] if result["models"] else ""
-                save_config(cfg)
-                return web.json_response({"ok": True, "models": result["models"], "selected_model": provider["selected_model"], "logs": logs})
+                if provider:
+                    provider["models"] = result["models"]
+                    if not provider.get("selected_model") or provider["selected_model"] not in result["models"]:
+                        provider["selected_model"] = result["models"][0] if result["models"] else ""
+                    save_config(cfg)
+                    return web.json_response({"ok": True, "models": result["models"], "selected_model": provider["selected_model"], "logs": logs})
+                else:
+                    # 新 provider 不在 config 中，返回结果但不保存
+                    return web.json_response({"ok": True, "models": result["models"], "selected_model": result["models"][0] if result["models"] else "", "logs": logs})
             else:
                 return web.json_response({"ok": False, "error": result["error"], "logs": logs})
         else:
@@ -334,32 +362,52 @@ async def handle_fetch_all_models(request):
 
 
 async def handle_validate(request):
-    """验证单个 provider（用 selected_model 发 completions/messages 请求）"""
+    """验证单个 provider（用 selected_model 发 completions/messages 请求）
+    
+    前端可以只传 name（从 config 查找），也可以传完整 provider 信息（新增未保存时）
+    """
     body = await request.json()
     name = body.get("name")
     stream = body.get("stream", False)
+    base_url = body.get("base_url", "")
+    api_key = body.get("api_key", "")
+    model = body.get("model", "")  # 前端可直接传模型名
+    ptype = body.get("type", "openai")
+
     cfg = load_config()
     providers = cfg.get("providers", [])
     provider = next((p for p in providers if p["name"] == name), None)
-    if not provider:
-        return web.json_response({"error": "provider not found"}, status=404)
 
-    model = provider.get("selected_model", "")
+    if not provider and not (base_url and api_key):
+        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_key)"}, status=404)
+
+    if provider:
+        base_url = base_url or provider.get("base_url", "")
+        api_key = api_key or provider.get("api_key", "")
+        ptype = ptype or provider.get("type", "openai")
+        model = model or provider.get("selected_model", "")
+        if "***" in api_key:
+            api_key = provider.get("api_key", api_key)
+    else:
+        # 不在 config 中且前端没传 model → 报错
+        if not model:
+            return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
+
     if not model:
         return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
 
     logs = []
     async with aiohttp.ClientSession() as session:
-        if provider["type"] == "openai":
-            result = await validate_openai(session, provider["base_url"], provider["api_key"], model, name, stream=stream)
+        if ptype == "openai":
+            result = await validate_openai(session, base_url, api_key, model, name, stream=stream)
             logs.append(result.get("log", {}))
             return web.json_response({**result, "logs": logs})
-        elif provider["type"] == "anthropic":
-            result = await validate_anthropic(session, provider["base_url"], provider["api_key"], model, name)
+        elif ptype == "anthropic":
+            result = await validate_anthropic(session, base_url, api_key, model, name)
             logs.append(result.get("log", {}))
             return web.json_response({**result, "logs": logs})
         else:
-            return web.json_response({"ok": False, "error": f"不支持的类型: {provider['type']}", "logs": []})
+            return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
 
 
 async def handle_validate_all(request):

@@ -414,11 +414,13 @@ async function saveConfig() {
 async function fetchModels(name) {
   setBusy(true);
   try {
-    const resp = await fetch(`${API}/api/fetch-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+    // 把 provider 完整信息一起传过去，这样新增未保存的也能获取模型
+    const p = providersData.find(x => x.name === name);
+    const payload = p ? { name, base_url: p.base_url, api_key: p.api_key, type: p.type || 'openai' } : { name };
+    const resp = await fetch(`${API}/api/fetch-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
     if (data.ok) {
-      const p = providersData.find(x => x.name === name);
       if (p) { p.models = data.models; p.selected_model = data.selected_model; }
       showToast(`📡 ${name}: 获取到 ${data.models.length} 个模型`, 'success');
     } else {
@@ -465,7 +467,12 @@ async function validateSingle(name) {
   setBusy(true);
   const stream = document.getElementById('chkStream').checked;
   try {
-    const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, stream }) });
+    // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
+    const p = providersData.find(x => x.name === name);
+    const payload = p
+      ? { name, stream, base_url: p.base_url, api_key: p.api_key, type: p.type || 'openai', model: p.selected_model || '' }
+      : { name, stream };
+    const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
     validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream };
