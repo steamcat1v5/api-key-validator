@@ -1,0 +1,14 @@
+# API Key Validator 配置模板
+# 复制为 config.yml 后填入真实信息
+# cp config.yml.example config.yml
+
+providers:
+  - name: "示例 Provider"
+    type: openai              # openai 或 anthropic
+    source_url: ""            # 获取 API Key 的网址（可选）
+    base_url: "https://api.example.com/v1"
+    api_key: "sk-xxxxxxxx"
+    models: []                # 点击「📡 获取模型」自动填充
+    selected_model: ""        # 获取模型后自动选择，也可手动输入
+
+stream: false
