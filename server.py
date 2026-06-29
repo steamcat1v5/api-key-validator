@@ -52,6 +52,16 @@ def save_config(cfg):
         raise RuntimeError(f"保存配置失败: {e}") from e
 
 
+def normalize_base_url(url):
+    """自动补全 https:// 前缀，去掉末尾斜杠"""
+    if not url:
+        return url
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
 def mask_key(key):
     if not key or len(key) < 8:
         return "***"
@@ -78,7 +88,8 @@ def fmt_json(obj):
 
 async def fetch_models_openai(session, base_url, api_key, provider_name):
     """OpenAI 协议: GET /v1/models"""
-    url = base_url.rstrip("/") + "/models"
+    base_url = normalize_base_url(base_url)
+    url = base_url + "/models"
     headers = {"Authorization": f"Bearer {api_key}"}
     req_log = f"─── Request ───\nGET {url}\n{fmt_headers(headers)}"
 
@@ -113,7 +124,8 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
 
 async def validate_openai(session, base_url, api_key, model, provider_name, stream=False):
     """OpenAI 协议: POST /v1/chat/completions"""
-    url = base_url.rstrip("/") + "/chat/completions"
+    base_url = normalize_base_url(base_url)
+    url = base_url + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}
     if stream:
@@ -189,7 +201,8 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
 
 async def validate_anthropic(session, base_url, api_key, model, provider_name):
     """Anthropic 协议: POST /v1/messages"""
-    url = base_url.rstrip("/") + "/v1/messages"
+    base_url = normalize_base_url(base_url)
+    url = base_url + "/v1/messages"
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
     payload = {"model": model, "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}
 
