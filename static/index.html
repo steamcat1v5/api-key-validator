@@ -397,9 +397,17 @@ async function saveConfig() {
     api_key: p.api_key||'', models: p.models||[], selected_model: p.selected_model||'',
     source_url: p.source_url||''
   }))};
-  const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-  const data = await resp.json();
-  showToast(data.ok ? '✅ 配置已保存' : '❌ 保存失败', data.ok ? 'success' : 'error');
+  try {
+    const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast('✅ 配置已保存', 'success');
+    } else {
+      showToast('❌ 保存失败: ' + (data.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('❌ 保存请求失败: ' + e.message, 'error');
+  }
 }
 
 // ─── 获取模型列表 ─────────────────

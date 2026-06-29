@@ -28,8 +28,28 @@ def load_config():
 
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失"""
+    import tempfile, os
+    tmp_fd = None
+    tmp_path = None
+    try:
+        content = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(CONFIG_PATH.parent), suffix=".yml.tmp"
+        )
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(CONFIG_PATH))
+    except Exception as e:
+        # 如果原子写入失败，不要删临时文件（便于排查），但确保不残留
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise RuntimeError(f"保存配置失败: {e}") from e
 
 
 def mask_key(key):
@@ -247,8 +267,11 @@ async def handle_save_config(request):
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
         })
-    save_config({"providers": merged, "stream": body.get("stream", False)})
-    return web.json_response({"ok": True})
+    try:
+        save_config({"providers": merged, "stream": body.get("stream", False)})
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 async def handle_fetch_models(request):
