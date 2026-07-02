@@ -545,7 +545,7 @@ function copyCurlModels(platform) {
   if (!p.api_key) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
 
   const base = normalizeBaseUrl(p.base_url);
-  const url = base.rstrip('/') + '/models';
+  const url = base + '/models';
   const curl = buildCurl('GET', url, {'Authorization': 'Bearer ' + p.api_key}, platform);
   copyToClipboard(curl, platform === 'linux' ? '🐧 models' : '🪟 models');
 }
@@ -560,11 +560,11 @@ function copyCurlValidate(platform) {
   const base = normalizeBaseUrl(p.base_url);
   let url, headers, body;
   if (p.type === 'anthropic') {
-    url = base.rstrip('/') + '/v1/messages';
+    url = base + '/v1/messages';
     headers = {'x-api-key': p.api_key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json'};
     body = JSON.stringify({model: p.selected_model, max_tokens: 50, messages: [{role: 'user', content: 'hi'}]});
   } else {
-    url = base.rstrip('/') + '/chat/completions';
+    url = base + '/chat/completions';
     headers = {'Authorization': 'Bearer ' + p.api_key, 'Content-Type': 'application/json'};
     body = JSON.stringify({model: p.selected_model, messages: [{role: 'user', content: 'hi'}], max_tokens: 50});
   }
@@ -576,7 +576,7 @@ function normalizeBaseUrl(url) {
   if (!url) return '';
   url = url.trim();
   if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
-  url = url.rstrip('/');
+  url = url.replace(/\/+$/, '');
   if (!url.endsWith('/v1')) url += '/v1';
   return url;
 }
