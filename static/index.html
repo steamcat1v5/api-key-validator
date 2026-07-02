@@ -193,8 +193,10 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
         <div class="log-header">
           📋 请求日志
           <span style="flex:1"></span>
-          <button class="btn-xs" onclick="copyCurlModels('linux')" title="复制 Linux/macOS curl 命令">🐧 curl</button>
-          <button class="btn-xs" onclick="copyCurlModels('win')" title="复制 Windows curl 命令">🪟 curl</button>
+          <button class="btn-xs" onclick="copyCurlModels('linux')" title="复制 Linux curl 获取模型命令">🐧 models</button>
+          <button class="btn-xs" onclick="copyCurlModels('win')" title="复制 Windows curl 获取模型命令">🪟 models</button>
+          <button class="btn-xs" onclick="copyCurlValidate('linux')" title="复制 Linux curl 验证命令">🐧 verify</button>
+          <button class="btn-xs" onclick="copyCurlValidate('win')" title="复制 Windows curl 验证命令">🪟 verify</button>
         </div>
         <div class="log-body" id="logBody"><span style="color:var(--text2);font-style:italic">等待操作...</span></div>
       </div>
@@ -537,37 +539,71 @@ function clearLogs() { logEntries = []; renderLog(); }
 
 // ─── 复制 curl 命令 ─────────────────
 function copyCurlModels(platform) {
-  // 找最近一个 fetch-models 的 GET 请求日志
-  let entry = null;
-  for (let i = logEntries.length - 1; i >= 0; i--) {
-    const e = logEntries[i];
-    if (e.method === 'GET' && e.url && e.url.includes('/models')) {
-      entry = e; break;
-    }
-  }
-  if (!entry) { showToast('⚠️ 暂无 models 请求日志，请先点击「获取模型」', 'error', 4000); return; }
+  if (selectedIdx < 0) { showToast('⚠️ 请先选择或添加一个 Provider', 'error', 4000); return; }
+  const p = providersData[selectedIdx];
+  if (!p.base_url) { showToast('⚠️ 请先填写 Base URL', 'error', 4000); return; }
+  if (!p.api_key) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
 
-  // 回查 provider 拿 api_key
-  const p = providersData.find(x => x.name === entry.provider);
-  const apiKey = p ? (p.api_key || '') : '';
-  if (!apiKey) { showToast('⚠️ 未找到对应 Provider 的 API Key', 'error', 4000); return; }
+  const base = normalizeBaseUrl(p.base_url);
+  const url = base.rstrip('/') + '/models';
+  const curl = buildCurl('GET', url, {'Authorization': 'Bearer ' + p.api_key}, platform);
+  copyToClipboard(curl, platform === 'linux' ? '🐧 models' : '🪟 models');
+}
 
-  let curl;
-  if (platform === 'linux') {
-    curl = `curl "${entry.url}" \\\n  -H "Authorization: Bearer ${apiKey}"`;
+function copyCurlValidate(platform) {
+  if (selectedIdx < 0) { showToast('⚠️ 请先选择或添加一个 Provider', 'error', 4000); return; }
+  const p = providersData[selectedIdx];
+  if (!p.base_url) { showToast('⚠️ 请先填写 Base URL', 'error', 4000); return; }
+  if (!p.api_key) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
+  if (!p.selected_model) { showToast('⚠️ 请先选择或输入模型名称', 'error', 4000); return; }
+
+  const base = normalizeBaseUrl(p.base_url);
+  let url, headers, body;
+  if (p.type === 'anthropic') {
+    url = base.rstrip('/') + '/v1/messages';
+    headers = {'x-api-key': p.api_key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json'};
+    body = JSON.stringify({model: p.selected_model, max_tokens: 50, messages: [{role: 'user', content: 'hi'}]});
   } else {
-    // Windows cmd: 换行用 ^, 双引号里面转义
-    curl = `curl "${entry.url}" ^\n  -H "Authorization: Bearer ${apiKey}"`;
+    url = base.rstrip('/') + '/chat/completions';
+    headers = {'Authorization': 'Bearer ' + p.api_key, 'Content-Type': 'application/json'};
+    body = JSON.stringify({model: p.selected_model, messages: [{role: 'user', content: 'hi'}], max_tokens: 50});
   }
+  const curl = buildCurl('POST', url, headers, platform, body);
+  copyToClipboard(curl, platform === 'linux' ? '🐧 verify' : '🪟 verify');
+}
 
+function normalizeBaseUrl(url) {
+  if (!url) return '';
+  url = url.trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
+  url = url.rstrip('/');
+  if (!url.endsWith('/v1')) url += '/v1';
+  return url;
+}
+
+// 拼 curl 命令：GET 不加 body，POST 加 -d
+function buildCurl(method, url, headers, platform, body) {
+  const sep = platform === 'linux' ? '\\' : '^';
+  let cmd = `curl -X ${method} "${url}"`;
+  for (const [k, v] of Object.entries(headers)) {
+    cmd += ` ${sep}\n  -H "${k}: ${v}"`;
+  }
+  if (body) {
+    // Windows cmd: 双引号内需要转义内部双引号为 \"
+    const escaped = platform === 'win' ? body.replace(/"/g, '\\"') : body;
+    cmd += ` ${sep}\n  -d "${escaped}"`;
+  }
+  return cmd;
+}
+
+function copyToClipboard(text, label) {
   const ta = document.createElement('textarea');
-  ta.value = curl;
+  ta.value = text;
   ta.style.cssText = 'position:fixed;left:-9999px';
   document.body.appendChild(ta);
   ta.select();
   try {
     document.execCommand('copy');
-    const label = platform === 'linux' ? '🐧 Linux curl' : '🪟 Windows curl';
     showToast(`📋 已复制 ${label} 命令`, 'success');
   } catch(e) {
     showToast('❌ 复制失败，请手动选择复制', 'error');
