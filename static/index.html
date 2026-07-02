@@ -37,7 +37,12 @@ header h1 { font-size: 18px; font-weight: 600; }
 .btn-danger { background: #e74c3c22; color: var(--red); }
 .btn-danger:hover:not(:disabled) { background: #e74c3c44; }
 .btn-fetch { background: #74b9ff22; color: var(--blue); border: 1px solid #74b9ff44; }
-.btn-fetch:hover:not(:disabled) { background: #74b9ff44; }
+.btn-xs {
+  padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 400;
+  border: 1px solid var(--border); background: var(--surface2); color: var(--text2);
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.btn-xs:hover { border-color: var(--accent); color: var(--text); }
 
 /* ─── 布局 ─── */
 .main-layout { display: flex; gap: 16px; }
@@ -185,7 +190,12 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
         <div class="detail-empty"><p>👈 选择或添加一个 Provider</p></div>
       </div>
       <div class="log-panel">
-        <div class="log-header">📋 请求日志</div>
+        <div class="log-header">
+          📋 请求日志
+          <span style="flex:1"></span>
+          <button class="btn-xs" onclick="copyCurlModels('linux')" title="复制 Linux/macOS curl 命令">🐧 curl</button>
+          <button class="btn-xs" onclick="copyCurlModels('win')" title="复制 Windows curl 命令">🪟 curl</button>
+        </div>
         <div class="log-body" id="logBody"><span style="color:var(--text2);font-style:italic">等待操作...</span></div>
       </div>
     </div>
@@ -500,7 +510,7 @@ async function validateAll() {
 function addLogEntry(l) {
   if (!l) return;
   const now = new Date().toLocaleTimeString('zh-CN', {hour12:false});
-  logEntries.push({ time: now, ...l });
+  logEntries.push({ time: now, ...l, provider: l.provider || null, url: l.url || '' });
   renderLog();
 }
 
@@ -524,6 +534,46 @@ function renderLog() {
 }
 
 function clearLogs() { logEntries = []; renderLog(); }
+
+// ─── 复制 curl 命令 ─────────────────
+function copyCurlModels(platform) {
+  // 找最近一个 fetch-models 的 GET 请求日志
+  let entry = null;
+  for (let i = logEntries.length - 1; i >= 0; i--) {
+    const e = logEntries[i];
+    if (e.method === 'GET' && e.url && e.url.includes('/models')) {
+      entry = e; break;
+    }
+  }
+  if (!entry) { showToast('⚠️ 暂无 models 请求日志，请先点击「获取模型」', 'error', 4000); return; }
+
+  // 回查 provider 拿 api_key
+  const p = providersData.find(x => x.name === entry.provider);
+  const apiKey = p ? (p.api_key || '') : '';
+  if (!apiKey) { showToast('⚠️ 未找到对应 Provider 的 API Key', 'error', 4000); return; }
+
+  let curl;
+  if (platform === 'linux') {
+    curl = `curl "${entry.url}" \\\n  -H "Authorization: Bearer ${apiKey}"`;
+  } else {
+    // Windows cmd: 换行用 ^, 双引号里面转义
+    curl = `curl "${entry.url}" ^\n  -H "Authorization: Bearer ${apiKey}"`;
+  }
+
+  const ta = document.createElement('textarea');
+  ta.value = curl;
+  ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    const label = platform === 'linux' ? '🐧 Linux curl' : '🪟 Windows curl';
+    showToast(`📋 已复制 ${label} 命令`, 'success');
+  } catch(e) {
+    showToast('❌ 复制失败，请手动选择复制', 'error');
+  }
+  document.body.removeChild(ta);
+}
 
 // ─── 工具 ─────────────────
 function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
