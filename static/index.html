@@ -225,7 +225,12 @@ async function init() {
   const data = await resp.json();
   if (chk && data.stream) chk.checked = true;
   providersData = data.providers || [];
-  if (providersData.length > 0) selectedIdx = 0;
+  // 恢复上次选中的 provider
+  if (data.selected_idx >= 0 && data.selected_idx < providersData.length) {
+    selectedIdx = data.selected_idx;
+  } else if (providersData.length > 0) {
+    selectedIdx = 0;
+  }
   renderAll();
 }
 
@@ -387,11 +392,23 @@ function addProvider() {
   renderAll();
 }
 
-function rmProvider(i) {
+async function rmProvider(i) {
   const name = providersData[i].name;
-  providersData.splice(i, 1);
-  if (validateResults[name]) delete validateResults[name];
-  if (selectedIdx >= providersData.length) selectedIdx = providersData.length - 1;
+  try {
+    const resp = await fetch(`${API}/api/delete-provider`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ idx: i })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      providersData.splice(i, 1);
+      if (validateResults[name]) delete validateResults[name];
+      selectedIdx = data.selected_idx >= 0 ? data.selected_idx : (providersData.length > 0 ? providersData.length - 1 : -1);
+      showToast(`🗑️ 已删除「${name}」`, 'success');
+    } else {
+      showToast(`❌ 删除失败: ${data.error}`, 'error');
+    }
+  } catch(e) { showToast('❌ 请求失败: ' + e.message, 'error'); }
   renderAll();
 }
 
@@ -408,11 +425,14 @@ function updField(i, k, v) {
 
 // ─── 保存配置 ─────────────────
 async function saveConfig() {
-  const payload = { providers: providersData.map(p => ({
-    name: p.name, type: p.type||'openai', base_url: p.base_url,
-    api_key: p.api_key||'', models: p.models||[], selected_model: p.selected_model||'',
-    source_url: p.source_url||''
-  }))};
+  const payload = {
+    providers: providersData.map(p => ({
+      name: p.name, type: p.type||'openai', base_url: p.base_url,
+      api_key: p.api_key||'', models: p.models||[], selected_model: p.selected_model||'',
+      source_url: p.source_url||''
+    })),
+    selected_idx: selectedIdx
+  };
   try {
     const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();

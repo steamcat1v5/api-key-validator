@@ -270,7 +270,11 @@ async def handle_index(request):
 async def handle_get_config(request):
     cfg = load_config()
     providers = cfg.get("providers", [])
-    return web.json_response({"providers": providers, "stream": cfg.get("stream", False)})
+    selected_idx = cfg.get("selected_idx", -1)
+    # 防越界
+    if selected_idx >= len(providers):
+        selected_idx = len(providers) - 1 if providers else -1
+    return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx})
 
 
 async def handle_save_config(request):
@@ -296,7 +300,7 @@ async def handle_save_config(request):
             "source_url": p.get("source_url", ""),
         })
     try:
-        save_config({"providers": merged, "stream": body.get("stream", False)})
+        save_config({"providers": merged, "stream": body.get("stream", False), "selected_idx": body.get("selected_idx", -1)})
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -480,6 +484,25 @@ async def handle_select_model(request):
     return web.json_response({"ok": True, "selected_model": model})
 
 
+async def handle_delete_provider(request):
+    """删除 provider"""
+    body = await request.json()
+    idx = body.get("idx")
+    if idx is None or not isinstance(idx, int):
+        return web.json_response({"ok": False, "error": "缺少 idx"}, status=400)
+    cfg = load_config()
+    providers = cfg.get("providers", [])
+    if idx < 0 or idx >= len(providers):
+        return web.json_response({"ok": False, "error": f"索引越界: {idx}/{len(providers)}"}, status=400)
+    deleted = providers.pop(idx)
+    selected_idx = cfg.get("selected_idx", -1)
+    if selected_idx >= len(providers):
+        selected_idx = len(providers) - 1 if providers else -1
+    cfg["selected_idx"] = selected_idx
+    save_config(cfg)
+    return web.json_response({"ok": True, "deleted": deleted.get("name", ""), "selected_idx": selected_idx})
+
+
 async def handle_stream(request):
     """保存 stream 设置"""
     body = await request.json()
@@ -500,6 +523,7 @@ app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/stream", handle_stream)
+app.router.add_post("/api/delete-provider", handle_delete_provider)
 
 if __name__ == "__main__":
     print("🐱 API Key Validator 启动在 http://0.0.0.0:8899")
