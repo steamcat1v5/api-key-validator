@@ -120,7 +120,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .combo-dropdown {
   display: none; position: absolute; top: 100%; left: 0; right: 0;
   background: #1e2235; border: 1px solid var(--border);
-  border-radius: 6px; max-height: 200px; overflow-y: auto;
+  border-radius: 6px; max-height: 300px; overflow-y: auto;
   z-index: 100; box-shadow: 0 6px 16px rgba(0,0,0,.5);
 }
 .combo-dropdown.open { display: block; }
@@ -128,7 +128,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
   padding: 7px 12px; font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace;
   cursor: pointer; color: var(--text1);
 }
-.combo-item:hover { background: var(--accent); color: #fff; }
+.combo-item:hover, .combo-item.active { background: var(--accent); color: #fff; }
 
 /* ─── 验证结果 ─── */
 .validate-result {
@@ -224,6 +224,37 @@ let selectedIdx = -1;
 let logEntries = [];
 let validateResults = {}; // name -> result
 let busy = false;
+let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
+
+// ─── 快照 & 脏检测 ─────────────────
+const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_key', 'source_url', 'selected_model'];
+
+function takeSnapshot(p) {
+  const snap = {};
+  for (const f of SAVE_FIELDS) snap[f] = p[f] || '';
+  return snap;
+}
+
+function isDirty(i) {
+  const p = providersData[i];
+  if (!p) return false;
+  return dirtyMap[i] === true;
+}
+
+function checkDirty(i) {
+  const p = providersData[i];
+  if (!p) { delete dirtyMap[i]; return false; }
+  // 新增的 provider（名称为空）直接标记为 dirty
+  if (!p.name) { dirtyMap[i] = true; return true; }
+  const snap = p._snapshot;
+  if (!snap) { dirtyMap[i] = true; return true; }
+  let changed = false;
+  for (const f of SAVE_FIELDS) {
+    if ((p[f] || '') !== (snap[f] || '')) { changed = true; break; }
+  }
+  if (changed) dirtyMap[i] = true; else delete dirtyMap[i];
+  return changed;
+}
 
 async function init() {
   // 恢复 stream 勾选状态
@@ -232,6 +263,8 @@ async function init() {
   const data = await resp.json();
   if (chk && data.stream) chk.checked = true;
   providersData = data.providers || [];
+  // 给每个 provider 存快照用于脏检测
+  providersData.forEach(p => { p._snapshot = takeSnapshot(p); });
   // 恢复上次选中的 provider
   if (data.selected_idx >= 0 && data.selected_idx < providersData.length) {
     selectedIdx = data.selected_idx;
@@ -288,15 +321,15 @@ function renderDetail() {
   let modelArea = `<div class="model-select-area">
     <div class="area-title">${modelHint}</div>
     <div class="combo-box" id="combo-${selectedIdx}">
-      <input class="model-input" value="${modelInputValue}"
+      <input class="model-input" id="model-input-${selectedIdx}" value="${modelInputValue}"
         onchange="onModelInput('${modelName}', this.value)"
+        oninput="filterCombo(${selectedIdx}, this.value)"
+        onkeydown="comboKeydown(${selectedIdx}, event, '${modelName}')"
         onblur="setTimeout(()=>closeCombo(${selectedIdx}),150)"
-        placeholder="输入或选择模型名称"
+        placeholder="输入或搜索模型名称"
         onfocus="openCombo(${selectedIdx})">
       <button class="combo-toggle" onclick="toggleCombo(${selectedIdx})" tabindex="-1">▼</button>
-      ${hasOptions ? `<div class="combo-dropdown" id="dropdown-${selectedIdx}">
-        ${p.models.map(m => `<div class="combo-item" onmousedown="pickCombo(${selectedIdx},'${esc(m)}','${modelName}')">${esc(m)}</div>`).join('')}
-      </div>` : ''}
+      ${hasOptions ? `<div class="combo-dropdown" id="dropdown-${selectedIdx}"></div>` : ''}
     </div>
   </div>`;
 
@@ -322,6 +355,7 @@ function renderDetail() {
       <span class="dot ${r ? r.status : (p.selected_model ? 'idle' : 'no_model')}" style="width:8px;height:8px"></span>
       <h2>${esc(p.name || '未命名')}</h2>
       <span class="type-badge">${p.type || 'openai'}</span>
+      <button class="btn ${isDirty(selectedIdx) ? 'btn-save' : 'btn-secondary'}" style="font-size:12px;padding:4px 10px" ${isDirty(selectedIdx) ? '' : 'disabled'} onclick="saveProvider(${selectedIdx})">${isDirty(selectedIdx) ? '💾 保存' : '💾 已保存'}</button>
     </div>
     <div class="detail-body">
       <div class="form-group">
@@ -366,26 +400,98 @@ function esc(s) { return (s||'').replace(/&/g,'&').replace(/"/g,'"').replace(/</
 function toggleCombo(idx) {
   const dd = document.getElementById(`dropdown-${idx}`);
   if (!dd) return;
-  dd.classList.toggle('open');
-  if (dd.classList.contains('open')) {
-    const input = dd.parentElement.querySelector('.model-input');
-    if (input) input.focus();
+  if (dd.classList.contains('open')) closeCombo(idx);
+  else openCombo(idx);
+}
+
+function renderComboItems(idx, filter) {
+  const dd = document.getElementById(`dropdown-${idx}`);
+  if (!dd) return;
+  const p = providersData[idx];
+  if (!p || !p.models || p.models.length === 0) return;
+  const modelName = esc(p.name);
+  const q = (filter || '').toLowerCase().trim();
+  const filtered = q
+    ? p.models.filter(m => m.toLowerCase().includes(q))
+    : p.models;
+  // 限制最多显示 100 条避免卡顿
+  const limited = filtered.slice(0, 100);
+  const hint = filtered.length > limited.length
+    ? `<div style="padding:4px 8px;font-size:11px;color:var(--text2);border-bottom:1px solid var(--border)">显示 ${limited.length}/${filtered.length} 个匹配</div>`
+    : (q && filtered.length === 0 ? '<div style="padding:8px;font-size:12px;color:var(--text2)">无匹配模型</div>' : '');
+  dd.innerHTML = hint + limited.map(m =>
+    `<div class="combo-item" onmousedown="pickCombo(${idx},'${esc(m)}','${modelName}')">${esc(m)}</div>`
+  ).join('');
+}
+
+function filterCombo(idx, value) {
+  // 实时过滤
+  if (!document.getElementById(`dropdown-${idx}`)) return;
+  document.getElementById(`dropdown-${idx}`).classList.add('open');
+  renderComboItems(idx, value);
+  // 过滤后默认选中第一项
+  const dd = document.getElementById(`dropdown-${idx}`);
+  if (dd) {
+    const first = dd.querySelector('.combo-item');
+    if (first) first.classList.add('active');
   }
 }
+
 function openCombo(idx) {
   const dd = document.getElementById(`dropdown-${idx}`);
-  if (dd) dd.classList.add('open');
+  if (!dd) return;
+  dd.classList.add('open');
+  // 渲染全部模型（无过滤）或按当前输入过滤
+  const input = document.getElementById(`model-input-${idx}`);
+  renderComboItems(idx, input ? input.value : '');
 }
+
+function comboKeydown(idx, e, name) {
+  const dd = document.getElementById(`dropdown-${idx}`);
+  if (!dd || !dd.classList.contains('open')) return;
+  const items = dd.querySelectorAll('.combo-item');
+  if (items.length === 0) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    let cur = dd.querySelector('.combo-item.active');
+    let next = cur ? cur.nextElementSibling : items[0];
+    // 跳过非 combo-item 的提示元素
+    while (next && !next.classList.contains('combo-item')) next = next.nextElementSibling;
+    if (!next) next = items[0];
+    if (cur) cur.classList.remove('active');
+    next.classList.add('active');
+    next.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    let cur = dd.querySelector('.combo-item.active');
+    let prev = cur ? cur.previousElementSibling : items[items.length - 1];
+    while (prev && !prev.classList.contains('combo-item')) prev = prev.previousElementSibling;
+    if (!prev) prev = items[items.length - 1];
+    if (cur) cur.classList.remove('active');
+    prev.classList.add('active');
+    prev.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const cur = dd.querySelector('.combo-item.active');
+    if (cur) {
+      const model = cur.textContent;
+      pickCombo(idx, model, name);
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeCombo(idx);
+  }
+}
+
 function closeCombo(idx) {
   const dd = document.getElementById(`dropdown-${idx}`);
   if (dd) dd.classList.remove('open');
 }
+
 function pickCombo(idx, model, name) {
-  const combo = document.getElementById(`combo-${idx}`);
-  if (combo) {
-    const input = combo.querySelector('.model-input');
-    if (input) input.value = model;
-  }
+  const input = document.getElementById(`model-input-${idx}`);
+  if (input) input.value = model;
   onModelInput(name, model);
   closeCombo(idx);
 }
@@ -406,6 +512,8 @@ async function selectProvider(i) {
 function addProvider() {
   providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', models: [], selected_model: '', source_url: '' });
   selectedIdx = providersData.length - 1;
+  // 新增 provider 没有快照，checkDirty 会自动标记为 dirty
+  checkDirty(selectedIdx);
   renderAll();
 }
 
@@ -420,6 +528,14 @@ async function rmProvider(i) {
     const data = await resp.json();
     if (data.ok) {
       providersData.splice(i, 1);
+      // 重建 dirtyMap（splice 后索引偏移）
+      const newDirty = {};
+      for (const [k, v] of Object.entries(dirtyMap)) {
+        const ki = parseInt(k);
+        if (ki < i) newDirty[ki] = v;
+        else if (ki > i) newDirty[ki - 1] = v;
+      }
+      dirtyMap = newDirty;
       if (validateResults[name]) delete validateResults[name];
       selectedIdx = data.selected_idx >= 0 ? data.selected_idx : (providersData.length > 0 ? providersData.length - 1 : -1);
       showToast(`🗑️ 已删除「${name}」`, 'success');
@@ -438,10 +554,40 @@ function updField(i, k, v) {
     }
   }
   providersData[i][k] = v;
+  checkDirty(i);
   if (k === 'name') renderList();
+  renderDetail(); // 更新保存按钮状态
 }
 
 // ─── 保存配置 ─────────────────
+async function saveProvider(i) {
+  const p = providersData[i];
+  if (!p) return;
+  // 先保存全部（后端是全量保存），然后更新该 provider 的快照
+  const payload = {
+    providers: providersData.map(pp => ({
+      name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
+      api_key: pp.api_key||'', models: pp.models||[], selected_model: pp.selected_model||'',
+      source_url: pp.source_url||''
+    })),
+    selected_idx: selectedIdx
+  };
+  try {
+    const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await resp.json();
+    if (data.ok) {
+      p._snapshot = takeSnapshot(p);
+      delete dirtyMap[i];
+      renderAll();
+      showToast(`✅ 「${p.name || '未命名'}」已保存`, 'success');
+    } else {
+      showToast('❌ 保存失败: ' + (data.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('❌ 保存请求失败: ' + e.message, 'error');
+  }
+}
+
 async function saveConfig() {
   const payload = {
     providers: providersData.map(p => ({
@@ -455,7 +601,11 @@ async function saveConfig() {
     const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.ok) {
-      showToast('✅ 配置已保存', 'success');
+      // 更新所有快照，清空 dirty
+      providersData.forEach(p => { p._snapshot = takeSnapshot(p); });
+      dirtyMap = {};
+      renderAll();
+      showToast('✅ 全部配置已保存', 'success');
     } else {
       showToast('❌ 保存失败: ' + (data.error || '未知错误'), 'error');
     }
@@ -503,15 +653,14 @@ async function fetchAllModels() {
   setBusy(false);
 }
 
-async function onModelInput(name, value) {
+function onModelInput(name, value) {
   const model = (value || '').trim();
   if (!model) return;
   const p = providersData.find(x => x.name === name);
   if (p && p.selected_model !== model) {
     p.selected_model = model;
-    try {
-      await fetch(`${API}/api/select-model`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, model }) });
-    } catch(e) {}
+    const idx = providersData.indexOf(p);
+    checkDirty(idx);
     renderAll();
   }
 }
