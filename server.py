@@ -503,6 +503,21 @@ async def handle_delete_provider(request):
     return web.json_response({"ok": True, "deleted": deleted.get("name", ""), "selected_idx": selected_idx})
 
 
+async def handle_select_provider(request):
+    """保存用户选中的 provider 索引"""
+    body = await request.json()
+    idx = body.get("idx")
+    if idx is None or not isinstance(idx, int):
+        return web.json_response({"ok": False, "error": "缺少 idx"}, status=400)
+    cfg = load_config()
+    providers = cfg.get("providers", [])
+    if idx < 0 or idx >= len(providers):
+        return web.json_response({"ok": False, "error": f"索引越界: {idx}/{len(providers)}"}, status=400)
+    cfg["selected_idx"] = idx
+    save_config(cfg)
+    return web.json_response({"ok": True, "selected_idx": idx})
+
+
 async def handle_stream(request):
     """保存 stream 设置"""
     body = await request.json()
@@ -522,6 +537,7 @@ app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/select-model", handle_select_model)
+app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)
 app.router.add_post("/api/delete-provider", handle_delete_provider)
 

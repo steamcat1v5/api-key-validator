@@ -70,6 +70,13 @@ header h1 { font-size: 18px; font-weight: 600; }
 .provider-item .p-name { font-size: 13px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .provider-item .p-type { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--surface3); color: var(--text2); }
 .provider-item .p-status { font-size: 11px; color: var(--text2); }
+.provider-item .btn-del-item {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  font-size: 13px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  opacity: 0; transition: all 0.15s; line-height: 1;
+}
+.provider-item:hover .btn-del-item { opacity: 0.7; }
+.provider-item .btn-del-item:hover { opacity: 1; color: var(--red); background: rgba(255,80,80,0.15); }
 
 /* ─── 详情卡片 ─── */
 .detail-empty { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 50px 20px; text-align: center; color: var(--text2); }
@@ -252,6 +259,7 @@ function renderList() {
       <span class="p-name">${esc(p.name || '未命名')}</span>
       <span class="p-status">${modelInfo}</span>
       <span class="p-type">${p.type || 'openai'}</span>
+      <button class="btn-del-item" onclick="event.stopPropagation(); rmProvider(${i})" title="删除">✕</button>
     </div>`;
   }).join('');
 }
@@ -348,7 +356,6 @@ function renderDetail() {
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busy?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busy || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
-      <button class="btn btn-danger" onclick="rmProvider(${selectedIdx})">✕ 删除</button>
     </div>
   </div>`;
 }
@@ -384,7 +391,17 @@ function pickCombo(idx, model, name) {
 }
 
 // ─── 操作 ─────────────────
-function selectProvider(i) { selectedIdx = i; renderAll(); }
+async function selectProvider(i) {
+  selectedIdx = i;
+  renderAll();
+  // 持久化选中索引
+  try {
+    await fetch(`${API}/api/select-provider`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ idx: i })
+    });
+  } catch(e) {}
+}
 
 function addProvider() {
   providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', models: [], selected_model: '', source_url: '' });
@@ -393,7 +410,8 @@ function addProvider() {
 }
 
 async function rmProvider(i) {
-  const name = providersData[i].name;
+  const name = providersData[i].name || '未命名';
+  if (!confirm(`确定要删除 Provider「${name}」吗？`)) return;
   try {
     const resp = await fetch(`${API}/api/delete-provider`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
