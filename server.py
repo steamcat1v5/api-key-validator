@@ -528,8 +528,30 @@ async def handle_stream(request):
     return web.json_response({"ok": True, "stream": stream})
 
 
+# 注册字体文件的 MIME 类型
+import mimetypes
+mimetypes.add_type('font/ttf', '.ttf')
+mimetypes.add_type('font/woff2', '.woff2')
+
 app = web.Application()
 app.router.add_get("/", handle_index)
+
+
+async def handle_static(request):
+    """自定义静态文件 handler，确保字体文件返回正确的 Content-Type"""
+    path = request.match_info.get('tail', '')
+    full_path = (Path(__file__).parent / "static" / path).resolve()
+    # 安全检查：确保路径在 static 目录下
+    static_root = (Path(__file__).parent / "static").resolve()
+    if not str(full_path).startswith(str(static_root)):
+        return web.Response(status=403, text="Forbidden")
+    if not full_path.is_file():
+        return web.Response(status=404, text="Not Found")
+    ct, _ = mimetypes.guess_type(str(full_path))
+    return web.FileResponse(full_path, headers={'Content-Type': ct or 'application/octet-stream'})
+
+
+app.router.add_get("/static/{tail:.*}", handle_static)
 app.router.add_get("/api/config", handle_get_config)
 app.router.add_post("/api/config", handle_save_config)
 app.router.add_post("/api/fetch-models", handle_fetch_models)
