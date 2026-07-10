@@ -157,20 +157,30 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                     preview += f"\n... (共 {len(body.strip().split(chr(10)))} 行)"
                 resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status} (stream)\n{preview}"
                 log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
-                # 流式：检查第一个 data: 行
+                # 流式：拼接所有 delta.content
+                collected_content = ""
+                usage = {}
                 for line in body.strip().split("\n"):
                     if line.startswith("data: ") and line != "data: [DONE]":
                         try:
                             chunk = json.loads(line[6:])
-                            usage = chunk.get("usage", {})
-                            return {
-                                "ok": True, "status": "available", "model": model,
-                                "stream": True, "usage": usage, "elapsed": elapsed,
-                                "log": log,
-                            }
+                            if chunk.get("usage"):
+                                usage = chunk["usage"]
+                            choices = chunk.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                c = delta.get("content", "")
+                                if c:
+                                    collected_content += c
                         except Exception:
                             pass
-                return {"ok": True, "status": "available", "model": model, "stream": True, "elapsed": elapsed, "log": log}
+                return {
+                    "ok": True, "status": "available", "model": model,
+                    "stream": True, "usage": usage,
+                    "content": collected_content[:80] if collected_content else "",
+                    "elapsed": elapsed,
+                    "log": log,
+                }
             else:
                 body_json = None
                 try:
@@ -214,7 +224,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
 async def validate_anthropic(session, base_url, api_key, model, provider_name, timeout=30):
     """Anthropic 协议: POST /v1/messages"""
     base_url = normalize_base_url(base_url)
-    url = base_url.rstrip("/") + "/v1/messages"
+    url = base_url.rstrip("/") + "/messages"
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
     payload = {"model": model, "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}
 
