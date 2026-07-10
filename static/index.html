@@ -233,6 +233,7 @@ let selectedIdx = -1;
 let logEntries = [];
 let validateResults = {}; // name -> result
 let busy = false;
+let busyProvider = null; // 正在验证/获取的 provider 名称
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
 
 // ─── 快照 & 脏检测 ─────────────────
@@ -397,8 +398,9 @@ function renderDetail() {
       ${resultArea}
     </div>
     <div class="detail-actions">
-      <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busy?'disabled':''}>📡 获取模型</button>
-      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busy || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
+      <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busy && (!busyProvider || busyProvider === p.name) ?'disabled':''}>📡 获取模型</button>
+      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busy && (!busyProvider || busyProvider === p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
+      <span style="margin-left:auto;font-size:11px;color:var(--text2);align-self:center">超时: ${(p.timeout||30)}s</span>
     </div>
   </div>`;
 }
@@ -625,7 +627,7 @@ async function saveConfig() {
 
 // ─── 获取模型列表 ─────────────────
 async function fetchModels(name) {
-  setBusy(true);
+  busyProvider = name; setBusy(true);
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能获取模型
     const p = providersData.find(x => x.name === name);
@@ -641,7 +643,7 @@ async function fetchModels(name) {
     }
     renderAll();
   } catch(e) { showToast('❌ 请求失败: ' + e.message, 'error'); }
-  setBusy(false);
+  busyProvider = null; setBusy(false);
 }
 
 async function fetchAllModels() {
@@ -676,7 +678,7 @@ function onModelInput(name, value) {
 
 // ─── 验证 ─────────────────
 async function validateSingle(name) {
-  setBusy(true);
+  busyProvider = name; setBusy(true);
   const stream = document.getElementById('chkStream').checked;
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
@@ -688,9 +690,14 @@ async function validateSingle(name) {
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
     validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream };
+    // 超时翻倍：后端返回新 timeout 时更新本地
+    if (data.timeout && p) {
+      p.timeout = data.timeout;
+      showToast(`⏱ 「${name}」超时，下次超时调整为 ${data.timeout}s`, 'error', 5000);
+    }
     renderAll();
   } catch(e) { showToast('❌ 验证失败: ' + e.message, 'error'); }
-  setBusy(false);
+  busyProvider = null; setBusy(false);
 }
 
 async function validateAll() {
@@ -702,7 +709,17 @@ async function validateAll() {
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
     data.results.forEach(r => {
       validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream };
+      // 超时翻倍：更新本地 timeout
+      if (r.timeout) {
+        const p = providersData.find(x => x.name === r.name);
+        if (p) p.timeout = r.timeout;
+      }
     });
+    // 检查是否有超时翻倍的 provider，提示
+    const timeoutsBumped = data.results.filter(r => r.timeout);
+    if (timeoutsBumped.length) {
+      showToast(`⏱ ${timeoutsBumped.length} 个 provider 超时，已翻倍超时上限`, 'error', 5000);
+    }
     renderAll();
   } catch(e) { showToast('❌ 批量验证失败: ' + e.message, 'error'); }
   setBusy(false);
