@@ -165,12 +165,12 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                             usage = chunk.get("usage", {})
                             return {
                                 "ok": True, "status": "available", "model": model,
-                                "stream": True, "usage": usage,
+                                "stream": True, "usage": usage, "elapsed": elapsed,
                                 "log": log,
                             }
                         except Exception:
                             pass
-                return {"ok": True, "status": "available", "model": model, "stream": True, "log": log}
+                return {"ok": True, "status": "available", "model": model, "stream": True, "elapsed": elapsed, "log": log}
             else:
                 body_json = None
                 try:
@@ -191,7 +191,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                         content = choices[0].get("message", {}).get("content", "")[:80]
                     return {
                         "ok": True, "status": "available", "model": model,
-                        "stream": False, "usage": usage, "content": content,
+                        "stream": False, "usage": usage, "content": content, "elapsed": elapsed,
                         "log": log,
                     }
                 elif status == 429:
@@ -243,7 +243,7 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, t
                 content_arr = body_json.get("content", [])
                 if content_arr:
                     content = content_arr[0].get("text", "")[:80]
-                return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "log": log}
+                return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "elapsed": elapsed, "log": log}
             elif status == 401:
                 return {"ok": False, "status": "auth_error", "model": model, "log": log}
             elif status == 429:

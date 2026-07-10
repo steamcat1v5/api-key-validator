@@ -166,7 +166,12 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .log-status.s4xx { color: var(--orange); }
 .log-status.s5xx { color: var(--red); }
 .log-status.s0 { color: var(--text2); }
-.log-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 8px 12px; margin: 4px 0 8px 20px; font-size: 11px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text2); }
+.log-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; margin: 4px 0 8px 20px; font-size: 11px; max-height: 240px; overflow: hidden; display: flex; flex-direction: column; }
+.log-detail-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.log-detail-tab { padding: 4px 12px; font-size: 10.5px; font-weight: 600; color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+.log-detail-tab:hover { color: var(--text); }
+.log-detail-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.log-detail-content { padding: 8px 12px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text2); flex: 1; }
 .log-provider-tag { display: inline-block; background: var(--accent); color: #fff; font-size: 9.5px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; font-weight: 500; }
 
 .toast { position: fixed; bottom: 20px; right: 20px; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s; z-index: 999; }
@@ -356,7 +361,10 @@ function renderDetail() {
         ${r.error ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
       </div>
       ${r.content ? `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>` : ''}
-      ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `<div class="vr-usage">📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}</div>` : ''}
+      <div class="vr-usage">
+        ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}` : ''}
+        ${r.elapsed != null ? `<span style="float:right">⏱${r.elapsed.toFixed(2)}s</span>` : ''}
+      </div>
     </div>`;
   }
 
@@ -689,7 +697,7 @@ async function validateSingle(name) {
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
-    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream };
+    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream, elapsed: data.elapsed };
     // 超时翻倍：后端返回新 timeout 时更新本地
     if (data.timeout && p) {
       p.timeout = data.timeout;
@@ -708,7 +716,7 @@ async function validateAll() {
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
     data.results.forEach(r => {
-      validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream };
+      validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream, elapsed: r.elapsed };
       // 超时翻倍：更新本地 timeout
       if (r.timeout) {
         const p = providersData.find(x => x.name === r.name);
@@ -726,10 +734,34 @@ async function validateAll() {
 }
 
 // ─── 日志 ─────────────────
+function parseDetail(detail) {
+  // detail 格式: "─── Request ───\n...\n\n─── Response ...───\n..."
+  // 拆成 request 和 response 两部分
+  const marker = '\n\n─── Response';
+  const idx = detail.indexOf(marker);
+  if (idx >= 0) {
+    let req = detail.slice(0, idx).replace('─── Request ───\n', '');
+    let resp = detail.slice(idx + 2); // 保留 "─── Response ..."
+    return { request: req, response: resp };
+  }
+  // 没有找到分隔，只有 timeout/error 的情况
+  // 检查是否以 "─── Request" 开头
+  if (detail.startsWith('─── Request')) {
+    return { request: detail.replace('─── Request ───\n', ''), response: '' };
+  }
+  // 只有 response 的情况（如 timeout）
+  return { request: '', response: detail };
+}
+
+let logTabStates = {}; // entryId -> 'request' | 'response'
+let logEntryCounter = 0;
+
 function addLogEntry(l) {
   if (!l) return;
   const now = new Date().toLocaleTimeString('zh-CN', {hour12:false});
-  logEntries.unshift({ time: now, ...l, provider: l.provider || null, url: l.url || '' });
+  const entryId = ++logEntryCounter;
+  logEntries.unshift({ id: entryId, time: now, ...l, provider: l.provider || null, url: l.url || '' });
+  logTabStates[entryId] = 'response'; // 默认 Response tab
   renderLog();
 }
 
@@ -740,19 +772,54 @@ function renderLog() {
     const s = parseInt(e.status) || 0;
     const sc = s >= 200 && s < 300 ? 's2xx' : s >= 400 && s < 500 ? 's4xx' : s >= 500 ? 's5xx' : 's0';
     const mc = (e.method || 'GET').toUpperCase();
+    let detailHTML = '';
+    if (e.detail) {
+      const { request, response } = parseDetail(e.detail);
+      const activeTab = logTabStates[e.id] || 'response';
+      const reqActive = activeTab === 'request' ? 'active' : '';
+      const respActive = activeTab === 'response' ? 'active' : '';
+      const reqDisplay = activeTab === 'request' ? '' : 'display:none';
+      const respDisplay = activeTab === 'response' ? '' : 'display:none';
+      detailHTML = `<div class="log-detail">
+        <div class="log-detail-tabs">
+          <div class="log-detail-tab ${reqActive}" onclick="switchLogTab(${e.id},'request')">Request</div>
+          <div class="log-detail-tab ${respActive}" onclick="switchLogTab(${e.id},'response')">Response</div>
+        </div>
+        ${request ? `<div class="log-detail-content" id="log-req-${e.id}" style="${reqDisplay}">${esc(request)}</div>` : ''}
+        ${response ? `<div class="log-detail-content" id="log-resp-${e.id}" style="${respDisplay}">${esc(response)}</div>` : ''}
+      </div>`;
+    }
     return `<div class="log-entry">
       <span class="log-time">${e.time}</span>
       ${e.provider ? `<span class="log-provider-tag">${esc(e.provider)}</span>` : ''}
       <span class="log-method ${mc}">${mc}</span>
       <span class="log-url">${esc(e.url)}</span>
       ${e.status ? `<span class="log-status ${sc}">${e.status}</span>` : ''}
-      ${e.detail ? `<div class="log-detail">${esc(e.detail)}</div>` : ''}
+      ${detailHTML}
     </div>`;
   }).join('');
   el.scrollTop = 0;
 }
 
-function clearLogs() { logEntries = []; renderLog(); }
+function switchLogTab(entryId, tab) {
+  logTabStates[entryId] = tab;
+  const reqEl = document.getElementById('log-req-' + entryId);
+  const respEl = document.getElementById('log-resp-' + entryId);
+  // 更新 tab active 状态
+  const tabs = document.querySelectorAll('.log-detail-tab');
+  tabs.forEach(t => {
+    if (t.getAttribute('onclick') === `switchLogTab(${entryId},'request')`) {
+      t.classList.toggle('active', tab === 'request');
+    }
+    if (t.getAttribute('onclick') === `switchLogTab(${entryId},'response')`) {
+      t.classList.toggle('active', tab === 'response');
+    }
+  });
+  if (reqEl) reqEl.style.display = tab === 'request' ? '' : 'none';
+  if (respEl) respEl.style.display = tab === 'response' ? '' : 'none';
+}
+
+function clearLogs() { logEntries = []; logTabStates = {}; renderLog(); }
 
 // ─── 复制 curl 命令 ─────────────────
 function copyCurlModels(platform) {
