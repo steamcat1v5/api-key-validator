@@ -239,6 +239,7 @@ let logEntries = [];
 let validateResults = {}; // name -> result
 let busy = false;
 let busyProvider = null; // 正在验证/获取的 provider 名称
+let busySet = new Set(); // 批量验证中尚未完成的 provider 集合
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
 
 // ─── 快照 & 脏检测 ─────────────────
@@ -406,8 +407,8 @@ function renderDetail() {
       ${resultArea}
     </div>
     <div class="detail-actions">
-      <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busy && (!busyProvider || busyProvider === p.name) ?'disabled':''}>📡 获取模型</button>
-      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busy && (!busyProvider || busyProvider === p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
+      <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
+      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
       <span style="margin-left:auto;font-size:11px;color:var(--text2);align-self:center">超时: ${(p.timeout||30)}s</span>
     </div>
   </div>`;
@@ -635,7 +636,7 @@ async function saveConfig() {
 
 // ─── 获取模型列表 ─────────────────
 async function fetchModels(name) {
-  busyProvider = name; setBusy(true);
+  busySet.add(name); renderAll();
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能获取模型
     const p = providersData.find(x => x.name === name);
@@ -651,7 +652,7 @@ async function fetchModels(name) {
     }
     renderAll();
   } catch(e) { showToast('❌ 请求失败: ' + e.message, 'error'); }
-  busyProvider = null; setBusy(false);
+  busySet.delete(name); renderAll();
 }
 
 async function fetchAllModels() {
@@ -686,7 +687,7 @@ function onModelInput(name, value) {
 
 // ─── 验证 ─────────────────
 async function validateSingle(name) {
-  busyProvider = name; setBusy(true);
+  busySet.add(name); renderAll();
   const stream = document.getElementById('chkStream').checked;
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
@@ -705,32 +706,63 @@ async function validateSingle(name) {
     }
     renderAll();
   } catch(e) { showToast('❌ 验证失败: ' + e.message, 'error'); }
-  busyProvider = null; setBusy(false);
+  busySet.delete(name); renderAll();
 }
 
 async function validateAll() {
-  setBusy(true);
   const stream = document.getElementById('chkStream').checked;
+  // 把所有有模型的 provider 加入 busySet
+  providersData.forEach(p => { if (p.selected_model) busySet.add(p.name); });
+  renderAll();
   try {
     const resp = await fetch(`${API}/api/validate-all`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ stream }) });
-    const data = await resp.json();
-    if (data.logs) data.logs.forEach(l => addLogEntry(l));
-    data.results.forEach(r => {
-      validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream, elapsed: r.elapsed };
-      // 超时翻倍：更新本地 timeout
-      if (r.timeout) {
-        const p = providersData.find(x => x.name === r.name);
-        if (p) p.timeout = r.timeout;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let timeoutBumps = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE 以 \n\n 分割事件
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        // 解析 SSE 事件
+        const lines = raw.split('\n');
+        let dataLine = '';
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) dataLine = line.slice(6);
+          else if (line.startsWith('event: ')) eventType = line.slice(7);
+        }
+        if (eventType === 'done' || !dataLine) continue;
+        try {
+          const msg = JSON.parse(dataLine);
+          if (msg.type === 'log' && msg.log) {
+            addLogEntry(msg.log);
+          } else if (msg.type === 'result' && msg.result) {
+            const r = msg.result;
+            validateResults[r.name] = { status: r.status, model: r.model, content: r.content, usage: r.usage, error: r.error, stream: r.stream, elapsed: r.elapsed };
+            if (r.timeout) {
+              const p = providersData.find(x => x.name === r.name);
+              if (p) p.timeout = r.timeout;
+              timeoutBumps++;
+            }
+            busySet.delete(r.name); // 完成的 provider 解除禁用
+            renderAll();
+          }
+        } catch(e) {}
       }
-    });
-    // 检查是否有超时翻倍的 provider，提示
-    const timeoutsBumped = data.results.filter(r => r.timeout);
-    if (timeoutsBumped.length) {
-      showToast(`⏱ ${timeoutsBumped.length} 个 provider 超时，已翻倍超时上限`, 'error', 5000);
     }
-    renderAll();
+    if (timeoutBumps > 0) {
+      showToast(`⏱ ${timeoutBumps} 个 provider 超时，已翻倍超时上限`, 'error', 5000);
+    }
   } catch(e) { showToast('❌ 批量验证失败: ' + e.message, 'error'); }
-  setBusy(false);
+  busySet.clear();
+  renderAll();
 }
 
 // ─── 日志 ─────────────────

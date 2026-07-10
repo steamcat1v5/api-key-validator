@@ -456,37 +456,59 @@ async def handle_validate(request):
 
 
 async def handle_validate_all(request):
-    """批量验证所有 provider"""
+    """批量验证所有 provider（并发，SSE 流式推送）"""
     body = await request.json()
     stream = body.get("stream", False)
     cfg = load_config()
     providers = cfg.get("providers", [])
-    all_logs = []
-    results = []
+
+    async def validate_one(p):
+        model = p.get("selected_model", "")
+        if not model:
+            return {"name": p.get("name", ""), "ok": False, "status": "no_model", "error": "未选择模型"}, None
+        timeout = p.get("timeout", 30)
+        result = None
+        if p["type"] == "openai":
+            result = await validate_openai(session, p["base_url"], p["api_key"], model, p["name"], stream=stream, timeout=timeout)
+        elif p["type"] == "anthropic":
+            result = await validate_anthropic(session, p["base_url"], p["api_key"], model, p["name"], timeout=timeout)
+        else:
+            return {"name": p["name"], "ok": False, "status": "error", "error": f"不支持的类型: {p['type']}"}, None
+        log = result.get("log", {})
+        r = {**result, "name": p["name"]}
+        # 超时翻倍
+        if result.get("status") == "timeout":
+            new_timeout = min(timeout * 2, 120)
+            p["timeout"] = new_timeout
+            r["timeout"] = new_timeout
+        elif "timeout" not in p:
+            p["timeout"] = 30
+        return r, log
+
+    resp = web.StreamResponse(status=200, headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    })
+    await resp.prepare(request)
 
     async with aiohttp.ClientSession() as session:
-        for p in providers:
-            model = p.get("selected_model", "")
-            if not model:
-                results.append({"name": p.get("name", ""), "ok": False, "status": "no_model", "error": "未选择模型"})
-                continue
-            result = None
-            timeout = p.get("timeout", 30)
-            if p["type"] == "openai":
-                result = await validate_openai(session, p["base_url"], p["api_key"], model, p["name"], stream=stream, timeout=timeout)
-                all_logs.append(result.get("log", {}))
-                results.append({**result, "name": p["name"]})
-            elif p["type"] == "anthropic":
-                result = await validate_anthropic(session, p["base_url"], p["api_key"], model, p["name"], timeout=timeout)
-                all_logs.append(result.get("log", {}))
-                results.append({**result, "name": p["name"]})
-            # 超时翻倍
-            if result and result.get("status") == "timeout":
-                p["timeout"] = min(timeout * 2, 120)
-                results[-1]["timeout"] = p["timeout"]
+        # 并发验证，每个完成就推送
+        tasks = [asyncio.create_task(validate_one(p)) for p in providers]
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                r, log = task.result()
+                if log:
+                    msg = json.dumps({"type": "log", "log": log}, ensure_ascii=False)
+                    await resp.write(f"data: {msg}\n\n".encode())
+                msg = json.dumps({"type": "result", "result": r}, ensure_ascii=False)
+                await resp.write(f"data: {msg}\n\n".encode())
 
     save_config(cfg)
-    return web.json_response({"results": results, "logs": all_logs})
+    await resp.write(b"event: done\ndata: {}\n\n")
+    return resp
 
 
 async def handle_select_model(request):
