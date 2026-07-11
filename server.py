@@ -82,7 +82,10 @@ def read_provider_logs(provider_name):
 
 
 def get_provider_last_status(provider_name):
-    """从日志文件取最近一条验证记录（POST 请求），推断语义状态"""
+    """从日志文件取最近一条验证记录（POST 请求），返回完整验证结果 dict
+    
+    返回: {status, model, content, elapsed, error, usage} 或 None
+    """
     entries = read_provider_logs(provider_name)
     if not entries:
         return None
@@ -93,14 +96,115 @@ def get_provider_last_status(provider_name):
     last = post_entries[-1]
     raw_status = str(last.get("status", "")).strip()
     detail = last.get("detail", "")
+    
+    # 推断语义状态
     if "Timeout" in detail:
-        return "timeout"
-    http_status_map = {"200": "available", "401": "auth_error", "429": "rate_limited", "400": "not_supported"}
-    if raw_status in http_status_map:
-        return http_status_map[raw_status]
-    if raw_status and raw_status != "0":
-        return "error"
-    return "error"
+        semantic_status = "timeout"
+    else:
+        http_status_map = {"200": "available", "401": "auth_error", "429": "rate_limited", "400": "not_supported"}
+        semantic_status = http_status_map.get(raw_status, "error" if raw_status else "error")
+    
+    # 从 detail 提取 elapsed
+    elapsed = None
+    m = re.search(r"Response \(([\d.]+)s\)", detail)
+    if m:
+        elapsed = float(m.group(1))
+    
+    # 从 Request JSON 提取 model
+    model = ""
+    try:
+        req_start = detail.find("─── Request")
+        if req_start >= 0:
+            req_section_end = detail.find("─── Response")
+            if req_section_end < 0:
+                req_section_end = len(detail)
+            req_text = detail[req_start:req_section_end]
+            # 找 "model": "xxx" 
+            mm = re.search(r'"model"\s*:\s*"([^"]+)"', req_text)
+            if mm:
+                model = mm.group(1)
+    except Exception:
+        pass
+    
+    # 从 detail 提取回复内容（HTTP 200 时的 JSON body 里的 content 字段）
+    content = None
+    error = None
+    usage = None
+    if raw_status == "200":
+        # 尝试从 Response JSON 中提取 content
+        try:
+            # 找 Response 部分的 JSON
+            resp_start = detail.find("─── Response")
+            if resp_start >= 0:
+                resp_text = detail[resp_start:]
+                # 找 HTTP 行之后的 JSON
+                json_start = resp_text.find("{")
+                if json_start >= 0:
+                    # 提取 JSON 块（可能多行）
+                    brace_depth = 0
+                    json_end = json_start
+                    for i, ch in enumerate(resp_text[json_start:], json_start):
+                        if ch == "{":
+                            brace_depth += 1
+                        elif ch == "}":
+                            brace_depth -= 1
+                            if brace_depth == 0:
+                                json_end = i + 1
+                                break
+                    resp_json_str = resp_text[json_start:json_end]
+                    resp_json = json.loads(resp_json_str)
+                    # OpenAI 格式: choices[0].message.content
+                    choices = resp_json.get("choices", [])
+                    if choices:
+                        msg = choices[0].get("message", {})
+                        content = (msg.get("content") or "")[:80] or None
+                    # Anthropic 格式: content[0].text
+                    if not content:
+                        content_blocks = resp_json.get("content", [])
+                        if isinstance(content_blocks, list) and content_blocks:
+                            text = content_blocks[0].get("text", "")
+                            content = (text or "")[:80] or None
+                    # usage
+                    u = resp_json.get("usage")
+                    if u:
+                        usage = u
+        except Exception:
+            pass
+    elif raw_status in ("401", "429", "400"):
+        # 从 Response 提取 error message
+        try:
+            resp_start = detail.find("─── Response")
+            if resp_start >= 0:
+                resp_text = detail[resp_start:]
+                json_start = resp_text.find("{")
+                if json_start >= 0:
+                    brace_depth = 0
+                    json_end = json_start
+                    for i, ch in enumerate(resp_text[json_start:], json_start):
+                        if ch == "{":
+                            brace_depth += 1
+                        elif ch == "}":
+                            brace_depth -= 1
+                            if brace_depth == 0:
+                                json_end = i + 1
+                                break
+                    resp_json = json.loads(resp_text[json_start:json_end])
+                    err_obj = resp_json.get("error", {})
+                    if isinstance(err_obj, dict):
+                        error = (err_obj.get("message") or "")[:100] or None
+                    elif isinstance(err_obj, str):
+                        error = err_obj[:100]
+        except Exception:
+            pass
+    
+    return {
+        "status": semantic_status,
+        "model": model,
+        "content": content,
+        "elapsed": elapsed,
+        "error": error,
+        "usage": usage,
+    }
 
 
 def clear_provider_logs(provider_name):

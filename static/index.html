@@ -283,8 +283,16 @@ async function init() {
   providersData = data.providers || [];
   // 从 config 恢复每个 provider 的最近验证状态到 validateResults
   providersData.forEach(p => {
-    if (p.last_status) {
-      validateResults[p.name] = { status: p.last_status, model: p.selected_model, elapsed: null };
+    if (p.last_status && typeof p.last_status === 'object') {
+      const ls = p.last_status;
+      validateResults[p.name] = {
+        status: ls.status || 'error',
+        model: ls.model || p.selected_model || '',
+        content: ls.content || null,
+        elapsed: ls.elapsed != null ? ls.elapsed : null,
+        error: ls.error || null,
+        usage: ls.usage || null,
+      };
       delete p.last_status; // 清理临时字段，避免脏检测干扰
     }
   });
