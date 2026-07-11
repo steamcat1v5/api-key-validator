@@ -219,16 +219,21 @@ def clear_provider_logs(provider_name):
 
 
 def _rename_provider_log_files(old_name, new_name):
-    """重命名 provider 的所有日志文件（用于 provider 改名时）"""
+    """重命名 provider 的所有日志文件（用于 provider 改名时）
+    
+    如果新名字对应的日志文件已存在，强制覆盖（日志非关键数据）。
+    """
     safe_old = safe_filename(old_name)
     safe_new = safe_filename(new_name)
     LOGS_DIR.mkdir(exist_ok=True)
     renamed = 0
     for f in LOGS_DIR.glob(f"{safe_old}_*.log"):
-        # 提取日期后缀部分：oldname_YYYYMMDD.log → newname_YYYYMMDD.log
         suffix = f.name[len(safe_old):]  # e.g. "_20260711.log"
         new_path = LOGS_DIR / f"{safe_new}{suffix}"
         try:
+            if new_path.exists():
+                new_path.unlink()  # 强制覆盖已存在的日志文件
+                logger.info("Overwriting existing log: %s", new_path.name)
             f.rename(new_path)
             renamed += 1
         except Exception as e:
@@ -544,6 +549,23 @@ async def handle_save_config(request):
         old_name = old_name_map.get(p.get("base_url", ""), "")
         if old_name and old_name != new_name:
             _rename_provider_log_files(old_name, new_name)
+
+    # 检测同名 provider 冲突，自动追加 -1/-2 后缀
+    seen_names = {}
+    for p in merged:
+        name = p.get("name", "")
+        if name in seen_names:
+            # 冲突，追加后缀
+            base = name
+            n = 1
+            new = f"{base}-{n}"
+            while new in seen_names:
+                n += 1
+                new = f"{base}-{n}"
+            p["name"] = new
+            seen_names[new] = True
+        else:
+            seen_names[name] = True
 
     try:
         save_config({"providers": merged, "stream": body.get("stream", False), "selected_idx": body.get("selected_idx", -1)})
