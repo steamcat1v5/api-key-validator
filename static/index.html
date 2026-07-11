@@ -235,7 +235,9 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 const API = '';
 let providersData = [];
 let selectedIdx = -1;
-let logEntries = [];
+let logEntriesByProvider = {}; // name -> [entries]
+let logTabStates = {}; // entryId -> 'request' | 'response'
+let logEntryCounter = 0;
 let validateResults = {}; // name -> result
 let busy = false;
 let busyProvider = null; // 正在验证/获取的 provider 名称
@@ -279,7 +281,14 @@ async function init() {
   const data = await resp.json();
   if (chk && data.stream) chk.checked = true;
   providersData = data.providers || [];
-  // 给每个 provider 存快照用于脏检测
+  // 从 config 恢复每个 provider 的最近验证状态到 validateResults
+  providersData.forEach(p => {
+    if (p.last_status) {
+      validateResults[p.name] = { status: p.last_status, model: p.selected_model, elapsed: null };
+      delete p.last_status; // 清理临时字段，避免脏检测干扰
+    }
+  });
+  // 给每个 provider 存快照用于脏检测（在删除 last_status 之后）
   providersData.forEach(p => { p._snapshot = takeSnapshot(p); });
   // 恢复上次选中的 provider
   if (data.selected_idx >= 0 && data.selected_idx < providersData.length) {
@@ -288,6 +297,10 @@ async function init() {
     selectedIdx = 0;
   }
   renderAll();
+  // 加载初始 provider 的日志
+  if (selectedIdx >= 0 && providersData[selectedIdx]) {
+    await loadProviderLogs(providersData[selectedIdx].name);
+  }
 }
 
 function renderAll() { renderList(); renderDetail(); }
@@ -520,12 +533,34 @@ function pickCombo(idx, model, name) {
 async function selectProvider(i) {
   selectedIdx = i;
   renderAll();
+  renderLog(); // 立即显示当前 provider 的日志（可能是空）
   // 持久化选中索引
   try {
     await fetch(`${API}/api/select-provider`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ idx: i })
     });
+  } catch(e) {}
+  // 加载该 provider 的历史日志
+  await loadProviderLogs(providersData[i].name);
+}
+
+async function loadProviderLogs(name) {
+  if (!name) return;
+  // 如果已经有缓存的日志，直接刷新显示
+  if (logEntriesByProvider[name]) { renderLog(); return; }
+  try {
+    const resp = await fetch(`${API}/api/logs?name=${encodeURIComponent(name)}`);
+    const data = await resp.json();
+    const entries = (data.entries || []).map(e => {
+      const entryId = ++logEntryCounter;
+      logTabStates[entryId] = 'response';
+      return { id: entryId, ...e };
+    });
+    logEntriesByProvider[name] = entries;
+    // 只有当前选中的 provider 才刷新显示
+    const currentP = providersData[selectedIdx];
+    if (currentP && currentP.name === name) renderLog();
   } catch(e) {}
 }
 
@@ -785,22 +820,30 @@ function parseDetail(detail) {
   return { request: '', response: detail };
 }
 
-let logTabStates = {}; // entryId -> 'request' | 'response'
-let logEntryCounter = 0;
+function getCurrentLogEntries() {
+  const p = providersData[selectedIdx];
+  return p ? (logEntriesByProvider[p.name] || []) : [];
+}
 
 function addLogEntry(l) {
   if (!l) return;
+  const providerName = l.provider || (providersData[selectedIdx] && providersData[selectedIdx].name) || '';
+  if (!providerName) return;
   const now = new Date().toLocaleTimeString('zh-CN', {hour12:false});
   const entryId = ++logEntryCounter;
-  logEntries.unshift({ id: entryId, time: now, ...l, provider: l.provider || null, url: l.url || '' });
+  if (!logEntriesByProvider[providerName]) logEntriesByProvider[providerName] = [];
+  logEntriesByProvider[providerName].unshift({ id: entryId, time: now, ...l, provider: providerName, url: l.url || '' });
   logTabStates[entryId] = 'response'; // 默认 Response tab
-  renderLog();
+  // 只在当前选中 provider 时刷新显示
+  const currentP = providersData[selectedIdx];
+  if (currentP && currentP.name === providerName) renderLog();
 }
 
 function renderLog() {
   const el = document.getElementById('logBody');
-  if (logEntries.length === 0) { el.innerHTML = '<span style="color:var(--text2);font-style:italic">等待操作...</span>'; return; }
-  el.innerHTML = logEntries.map(e => {
+  const entries = getCurrentLogEntries();
+  if (entries.length === 0) { el.innerHTML = '<span style="color:var(--text2);font-style:italic">等待操作...</span>'; return; }
+  el.innerHTML = entries.map(e => {
     const s = parseInt(e.status) || 0;
     const sc = s >= 200 && s < 300 ? 's2xx' : s >= 400 && s < 500 ? 's4xx' : s >= 500 ? 's5xx' : 's0';
     const mc = (e.method || 'GET').toUpperCase();
@@ -851,7 +894,17 @@ function switchLogTab(entryId, tab) {
   if (respEl) respEl.style.display = tab === 'response' ? '' : 'none';
 }
 
-function clearLogs() { logEntries = []; logTabStates = {}; renderLog(); }
+async function clearLogs() {
+  const p = providersData[selectedIdx];
+  if (!p) { showToast('⚠️ 请先选择一个 Provider', 'error', 3000); return; }
+  // 前端立即清空
+  logEntriesByProvider[p.name] = [];
+  renderLog();
+  // 后端也清空
+  try {
+    await fetch(`${API}/api/clear-logs`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: p.name}) });
+  } catch(e) {}
+}
 
 // ─── 复制 curl 命令 ─────────────────
 function copyCurlModels(platform) {

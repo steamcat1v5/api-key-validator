@@ -6,10 +6,108 @@ import json
 import asyncio
 import aiohttp
 import time
+import re
 from pathlib import Path
 from aiohttp import web
 
 CONFIG_PATH = Path(__file__).parent / "config.yml"
+LOGS_DIR = Path(__file__).parent / "logs"
+MAX_LOG_FILES_PER_PROVIDER = 3
+
+
+def safe_filename(name):
+    """将 provider 名称转为安全的文件名"""
+    return re.sub(r'[^\w\u4e00-\u9fff\-]', '_', name).strip('_') or 'unnamed'
+
+
+def write_provider_log(provider_name, log_entry):
+    """将一条日志写入 provider 的日志文件，并清理超出上限的旧文件"""
+    LOGS_DIR.mkdir(exist_ok=True)
+    today = time.strftime("%Y%m%d")
+    safe_name = safe_filename(provider_name)
+    log_file = LOGS_DIR / f"{safe_name}_{today}.log"
+
+    # 写入日志（追加模式）
+    timestamp = time.strftime("%H:%M:%S")
+    with open(log_file, "a", encoding="utf-8") as f:
+        if isinstance(log_entry, dict):
+            detail = log_entry.get("detail", "")
+            method = log_entry.get("method", "POST")
+            url = log_entry.get("url", "")
+            status = log_entry.get("status", "")
+            f.write(f"[{timestamp}] {method} {url} [{status}]\n{detail}\n\n")
+        else:
+            f.write(f"[{timestamp}] {log_entry}\n\n")
+
+    # 清理：每个 provider 最多保留 MAX_LOG_FILES_PER_PROVIDER 个文件
+    pattern = f"{safe_name}_*.log"
+    files = sorted(LOGS_DIR.glob(pattern))
+    if len(files) > MAX_LOG_FILES_PER_PROVIDER:
+        for old_file in files[:-MAX_LOG_FILES_PER_PROVIDER]:
+            old_file.unlink(missing_ok=True)
+
+
+def read_provider_logs(provider_name):
+    """读取指定 provider 的所有日志文件，合并返回日志条目列表"""
+    LOGS_DIR.mkdir(exist_ok=True)
+    safe_name = safe_filename(provider_name)
+    files = sorted(LOGS_DIR.glob(f"{safe_name}_*.log"))
+    entries = []
+    # 每条日志以 [HH:MM:SS] 开头，用正则定位每条日志的起始位置
+    entry_re = re.compile(r'^\[(\d{2}:\d{2}:\d{2})\]\s+(\w+)\s+(.+?)\s+\[(\w+)\]', re.MULTILINE)
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8")
+            # 找到所有条目的起始位置
+            matches = list(entry_re.finditer(content))
+            for i, m in enumerate(matches):
+                start = m.start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+                block = content[start:end].strip()
+                if not block:
+                    continue
+                time_str, method, url, status = m.groups()
+                detail = content[m.end():end].strip("\n")
+                entries.append({
+                    "time": time_str,
+                    "method": method,
+                    "url": url,
+                    "status": status,
+                    "detail": detail,
+                    "provider": provider_name,
+                })
+        except Exception:
+            pass
+    return entries
+
+
+def get_provider_last_status(provider_name):
+    """从日志文件取最近一条验证记录（POST 请求），推断语义状态"""
+    entries = read_provider_logs(provider_name)
+    if not entries:
+        return None
+    # 只看 POST 请求（验证请求），跳过 GET（获取模型列表）
+    post_entries = [e for e in entries if (e.get("method", "")).upper() == "POST"]
+    if not post_entries:
+        return None
+    last = post_entries[-1]
+    raw_status = str(last.get("status", "")).strip()
+    detail = last.get("detail", "")
+    if "Timeout" in detail:
+        return "timeout"
+    http_status_map = {"200": "available", "401": "auth_error", "429": "rate_limited", "400": "not_supported"}
+    if raw_status in http_status_map:
+        return http_status_map[raw_status]
+    if raw_status and raw_status != "0":
+        return "error"
+    return "error"
+
+
+def clear_provider_logs(provider_name):
+    """清空指定 provider 的所有日志文件"""
+    safe_name = safe_filename(provider_name)
+    for f in LOGS_DIR.glob(f"{safe_name}_*.log"):
+        f.unlink(missing_ok=True)
 
 
 def load_config():
@@ -284,6 +382,9 @@ async def handle_get_config(request):
     # 防越界
     if selected_idx >= len(providers):
         selected_idx = len(providers) - 1 if providers else -1
+    # 附带每个 provider 的最近验证状态
+    for p in providers:
+        p["last_status"] = get_provider_last_status(p.get("name", ""))
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx})
 
 
@@ -356,6 +457,7 @@ async def handle_fetch_models(request):
         if ptype == "openai":
             result = await fetch_models_openai(session, base_url, api_key, name)
             logs.append(result["log"])
+            write_provider_log(name, result.get("log", {}))
             if result["ok"]:
                 if provider:
                     provider["models"] = result["models"]
@@ -388,7 +490,8 @@ async def handle_fetch_all_models(request):
                 continue
             if p["type"] == "openai":
                 result = await fetch_models_openai(session, p["base_url"], p["api_key"], p["name"])
-                all_logs.append(result["log"])
+                all_logs.append({**result["log"], "provider": p["name"]})
+                write_provider_log(p["name"], result.get("log", {}))
                 if result["ok"]:
                     p["models"] = result["models"]
                     if not p.get("selected_model") or p["selected_model"] not in result["models"]:
@@ -444,10 +547,14 @@ async def handle_validate(request):
     async with aiohttp.ClientSession() as session:
         if ptype == "openai":
             result = await validate_openai(session, base_url, api_key, model, name, stream=stream, timeout=timeout)
-            logs.append(result.get("log", {}))
+            log = result.get("log", {})
+            logs.append(log)
+            write_provider_log(name, log)
         elif ptype == "anthropic":
             result = await validate_anthropic(session, base_url, api_key, model, name, timeout=timeout)
-            logs.append(result.get("log", {}))
+            log = result.get("log", {})
+            logs.append(log)
+            write_provider_log(name, log)
         else:
             return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
 
@@ -511,7 +618,9 @@ async def handle_validate_all(request):
             for task in done:
                 r, log = task.result()
                 if log:
-                    msg = json.dumps({"type": "log", "log": log}, ensure_ascii=False)
+                    write_provider_log(r.get("name", ""), log)
+                    log_with_name = {**log, "provider": r.get("name", "")}
+                    msg = json.dumps({"type": "log", "log": log_with_name}, ensure_ascii=False)
                     await resp.write(f"data: {msg}\n\n".encode())
                 msg = json.dumps({"type": "result", "result": r}, ensure_ascii=False)
                 await resp.write(f"data: {msg}\n\n".encode())
@@ -582,6 +691,25 @@ async def handle_stream(request):
 
 # 注册字体文件的 MIME 类型
 import mimetypes
+async def handle_get_logs(request):
+    """获取指定 provider 的日志"""
+    name = request.query.get("name", "")
+    if not name:
+        return web.json_response({"error": "缺少 name 参数"}, status=400)
+    entries = read_provider_logs(name)
+    return web.json_response({"entries": entries})
+
+
+async def handle_clear_logs(request):
+    """清空指定 provider 的日志"""
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        return web.json_response({"error": "缺少 name 参数"}, status=400)
+    clear_provider_logs(name)
+    return web.json_response({"ok": True})
+
+
 mimetypes.add_type('font/ttf', '.ttf')
 mimetypes.add_type('font/woff2', '.woff2')
 
@@ -614,6 +742,8 @@ app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)
 app.router.add_post("/api/delete-provider", handle_delete_provider)
+app.router.add_get("/api/logs", handle_get_logs)
+app.router.add_post("/api/clear-logs", handle_clear_logs)
 
 if __name__ == "__main__":
     print("🐱 API Key Validator 启动在 http://0.0.0.0:8899")
