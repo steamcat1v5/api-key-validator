@@ -86,6 +86,16 @@ header h1 { font-size: 18px; font-weight: 600; }
 }
 .provider-item:hover .btn-del-item { opacity: 0.7; }
 .provider-item .btn-del-item:hover { opacity: 1; color: var(--red); background: rgba(255,80,80,0.15); }
+/* 拖拽排序 */
+.provider-item.dragging { opacity: 0.4; border-style: dashed; }
+.provider-item.drag-over-top { box-shadow: 0 -2px 0 0 var(--accent); }
+.provider-item.drag-over-bottom { box-shadow: 0 2px 0 0 var(--accent); }
+.provider-item .drag-handle {
+  cursor: grab; flex-shrink: 0; color: var(--text2); opacity: 0.2;
+  font-size: 13px; padding: 0 2px; transition: opacity 0.15s;
+}
+.provider-item:hover .drag-handle { opacity: 0.6; }
+.provider-item .drag-handle:active { cursor: grabbing; }
 
 /* ─── 详情卡片 ─── */
 .detail-empty { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 50px 20px; text-align: center; color: var(--text2); }
@@ -324,7 +334,10 @@ function renderList() {
     const r = validateResults[p.name];
     const dotClass = r ? (r.status || 'idle') : (p.selected_model ? 'idle' : 'no_model');
     const modelInfo = p.models && p.models.length ? `${p.models.length} 模型` : '未获取';
-    return `<div class="provider-item ${i === selectedIdx ? 'active' : ''}" onclick="selectProvider(${i})">
+    return `<div class="provider-item ${i === selectedIdx ? 'active' : ''}" data-idx="${i}" draggable="true"
+        ondragstart="onDragStart(event,${i})" ondragover="onDragOver(event,${i})" ondragleave="onDragLeave(event)" ondrop="onDrop(event,${i})" ondragend="onDragEnd(event)"
+        onclick="selectProvider(${i})">
+      <span class="drag-handle" title="拖拽排序">⠿</span>
       <span class="dot ${dotClass}"></span>
       <span class="p-name">${esc(p.name || '未命名')}</span>
       <span class="p-status">${modelInfo}</span>
@@ -537,6 +550,67 @@ function pickCombo(idx, model, name) {
   closeCombo(idx);
 }
 
+// ─── 拖拽排序 ─────────────────
+let dragIdx = null;
+
+function onDragStart(e, i) {
+  dragIdx = i;
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  // Firefox 需要 setData 才能触发拖拽
+  try { e.dataTransfer.setData('text/plain', String(i)); } catch(_) {}
+}
+
+function onDragOver(e, i) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (dragIdx === null || dragIdx === i) return;
+  const el = e.currentTarget;
+  el.classList.remove('drag-over-top', 'drag-over-bottom');
+  // 判断鼠标位置在上半还是下半
+  const rect = el.getBoundingClientRect();
+  const mid = rect.top + rect.height / 2;
+  if (e.clientY < mid) el.classList.add('drag-over-top');
+  else el.classList.add('drag-over-bottom');
+}
+
+function onDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
+}
+
+async function onDrop(e, i) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
+  if (dragIdx === null || dragIdx === i) return;
+  // 判断插入位置（上半=前，下半=后）
+  const rect = e.currentTarget.getBoundingClientRect();
+  const insertAfter = e.clientY >= rect.top + rect.height / 2;
+  const from = dragIdx;
+  // 从原位置移除
+  const [moved] = providersData.splice(from, 1);
+  // 计算目标位置（移除后 index 偏移）
+  let target = i;
+  if (from < i) target = i - 1;
+  if (insertAfter) target += 1;
+  providersData.splice(target, 0, moved);
+  // 更新 selectedIdx
+  if (from === selectedIdx) selectedIdx = target;
+  else if (from < selectedIdx && target >= selectedIdx) selectedIdx--;
+  else if (from > selectedIdx && target <= selectedIdx) selectedIdx++;
+  dragIdx = null;
+  renderAll();
+  await saveConfig(true);
+}
+
+function onDragEnd(e) {
+  e.target.classList.remove('dragging');
+  document.querySelectorAll('.drag-over-top,.drag-over-bottom').forEach(el => {
+    el.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+  dragIdx = null;
+}
+
 // ─── 操作 ─────────────────
 async function selectProvider(i) {
   selectedIdx = i;
@@ -651,7 +725,7 @@ async function saveProvider(i) {
   }
 }
 
-async function saveConfig() {
+async function saveConfig(silent) {
   const payload = {
     providers: providersData.map(p => ({
       name: p.name, type: p.type||'openai', base_url: p.base_url,
@@ -668,7 +742,7 @@ async function saveConfig() {
       providersData.forEach(p => { p._snapshot = takeSnapshot(p); });
       dirtyMap = {};
       renderAll();
-      showToast('✅ 全部配置已保存', 'success');
+      if (!silent) showToast('✅ 全部配置已保存', 'success');
     } else {
       showToast('❌ 保存失败: ' + (data.error || '未知错误'), 'error');
     }
