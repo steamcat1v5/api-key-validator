@@ -116,6 +116,27 @@ input, select {
   padding: 7px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%; transition: border-color 0.15s;
 }
 input:focus, select:focus { border-color: var(--accent); }
+
+/* ─── URL 链接/编辑切换 ─── */
+.url-field { position: relative; }
+.url-field .url-input {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%;
+  transition: border-color 0.15s;
+}
+.url-field .url-input:focus { border-color: var(--accent); }
+.url-field .url-display {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; font-size: 13px; cursor: text; transition: border-color 0.15s;
+}
+.url-field .url-display:hover { border-color: var(--accent); }
+.url-field .url-display .url-link {
+  color: var(--accent); text-decoration: none; word-break: break-all;
+}
+.url-field .url-display .url-link:hover { text-decoration: underline; }
+.url-field .url-display .url-placeholder { color: var(--text2); }
+.url-field.editing .url-display { display: none; }
+.url-field:not(.editing) .url-input { display: none; }
 input.key-input { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 
 /* ─── 模型选择 ─── */
@@ -417,7 +438,18 @@ function renderDetail() {
       </div>
       <div class="form-group">
         <label>来源网址</label>
-        <input value="${esc(p.source_url||'')}" onchange="updField(${selectedIdx},'source_url',this.value)" placeholder="https://example.com/get-api">
+        <div class="url-field" id="source-url-wrap-${selectedIdx}">
+          <div class="url-display" onclick="enterUrlEdit(${selectedIdx})">
+            ${p.source_url
+              ? `<a class="url-link" href="${esc(p.source_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(p.source_url)}</a>`
+              : `<span class="url-placeholder">点击编辑</span>`}
+          </div>
+          <input class="url-input" id="source-url-input-${selectedIdx}" value="${esc(p.source_url||'')}"
+             onchange="onUrlChange(${selectedIdx}, this.value)"
+             onblur="onUrlChange(${selectedIdx}, this.value)"
+             onkeydown="if(event.key==='Escape'){this.blur()}"
+             placeholder="https://example.com/get-api">
+        </div>
       </div>
       <div class="form-group">
         <label>Base URL</label>
@@ -609,6 +641,24 @@ function onDragEnd(e) {
     el.classList.remove('drag-over-top', 'drag-over-bottom');
   });
   dragIdx = null;
+}
+
+// ─── URL 链接/编辑切换 ─────────────────
+function enterUrlEdit(idx) {
+  const field = document.getElementById(`source-url-wrap-${idx}`);
+  if (!field) return;
+  field.classList.add('editing');
+  const input = field.querySelector('.url-input');
+  if (input) { input.focus(); input.select(); }
+}
+
+function onUrlChange(idx, value) {
+  const p = providersData[idx];
+  const oldVal = p ? (p.source_url || '') : '';
+  updField(idx, 'source_url', value);
+  const field = document.getElementById(`source-url-wrap-${idx}`);
+  if (field) field.classList.remove('editing');
+  if (value !== oldVal) renderDetail();
 }
 
 // ─── 操作 ─────────────────
