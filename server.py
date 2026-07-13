@@ -514,9 +514,10 @@ async def handle_get_config(request):
     # 防越界
     if selected_idx >= len(providers):
         selected_idx = len(providers) - 1 if providers else -1
-    # 附带每个 provider 的最近验证状态
+    # 附带每个 provider 的最近验证状态（优先用 config 中持久化的 last_status）
     for p in providers:
-        p["last_status"] = get_provider_last_status(p.get("name", ""))
+        if not p.get("last_status"):
+            p["last_status"] = get_provider_last_status(p.get("name", ""))
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx})
 
 
@@ -528,6 +529,7 @@ async def handle_save_config(request):
     old_key_map = {(p.get("name", ""), p.get("base_url", "")): p.get("api_key", "") for p in old_providers}
 
     merged = []
+    old_status_map = {p.get("base_url", ""): p.get("last_status") for p in old_providers}
     for p in new_providers:
         key = p.get("api_key", "")
         if not key or "***" in key:
@@ -537,6 +539,8 @@ async def handle_save_config(request):
         if key:
             lines = [ln.strip() for ln in key.split("\n") if ln.strip()]
             key = "\n".join(lines)
+        # 保留旧 last_status（前端不传此字段）
+        ls = p.get("last_status") or old_status_map.get(p.get("base_url", ""))
         merged.append({
             "name": p.get("name", ""),
             "type": p.get("type", "openai"),
@@ -545,6 +549,7 @@ async def handle_save_config(request):
             "models": p.get("models", []),
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
+            "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
     old_name_map = {p.get("base_url", ""): p.get("name", "") for p in old_providers}
@@ -760,6 +765,19 @@ async def handle_validate(request):
 
     # 返回第一个 result 的字段作为主响应，附加 multi_results
     first = all_results[0]
+    # 持久化 last_status 到 config（含 multi_results）
+    if provider:
+        provider["last_status"] = {
+            "status": overall_status,
+            "model": first.get("model", model),
+            "content": first.get("content"),
+            "elapsed": first.get("elapsed"),
+            "error": first.get("error"),
+            "usage": first.get("usage"),
+            "multi_results": all_results if len(keys) > 1 else None,
+        }
+        save_config(cfg)
+
     return web.json_response({
         **first,
         "status": overall_status,

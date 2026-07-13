@@ -328,6 +328,7 @@ async function init() {
         elapsed: ls.elapsed != null ? ls.elapsed : null,
         error: ls.error || null,
         usage: ls.usage || null,
+        multi_results: ls.multi_results || null,
       };
       delete p.last_status; // 清理临时字段，避免脏检测干扰
     }
