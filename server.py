@@ -251,6 +251,11 @@ def load_config():
             p.setdefault("models", [])
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
+            # 兼容: api_keys (list) → api_key (多行 string)，中间逻辑统一用 api_key
+            if "api_keys" in p and "api_key" not in p:
+                keys = p.pop("api_keys")
+                p["api_key"] = "\n".join(keys) if isinstance(keys, list) else str(keys or "")
+            p.setdefault("api_key", "")
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
         return cfg
@@ -258,8 +263,16 @@ def load_config():
 
 
 def save_config(cfg):
-    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失"""
+    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失
+    
+    存储格式: api_keys (YAML list)，比换行分隔的 string 更直观
+    """
     import tempfile, os
+    # 写入前把 api_key (多行 string) 转为 api_keys (list)，删除 api_key
+    for p in cfg.get("providers", []):
+        ak = p.pop("api_key", "")
+        p["api_keys"] = [k.strip() for k in ak.split("\n") if k.strip()] if ak else []
+        # 保持 api_keys 在固定位置（name/type/base_url 之后）
     tmp_fd = None
     tmp_path = None
     try:
