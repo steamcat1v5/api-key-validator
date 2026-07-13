@@ -407,16 +407,43 @@ function renderDetail() {
   // 验证结果
   let resultArea = '';
   if (r) {
-    const statusLabel = {available:'✅ 可用',rate_limited:'⚠️ 限速',auth_error:'❌ 鉴权失败',not_supported:'❌ 模型不支持',timeout:'⏱ 超时',error:'⚠️ 错误',no_model:'⚠️ 未选模型'}[r.status]||r.status;
-    const statusColor = r.status === 'available' ? 'var(--green)' : (r.status === 'rate_limited' ? 'var(--orange)' : 'var(--red)');
+    const statusLabel = {available:'✅ 可用',rate_limited:'⚠️ 限速',auth_error:'❌ 鉴权失败',not_supported:'❌ 模型不支持',timeout:'⏱ 超时',error:'⚠️ 错误',no_model:'⚠️ 未选模型',mixed:'🔄 混合'}[r.status]||r.status;
+    const statusColor = r.status === 'available' ? 'var(--green)' : (r.status === 'rate_limited' || r.status === 'mixed' ? 'var(--orange)' : 'var(--red)');
+    
+    // 多 key 结果表格
+    let multiArea = '';
+    if (r.multi_results && r.multi_results.length > 1) {
+      const rows = r.multi_results.map(m => {
+        const mLabel = {available:'✅',rate_limited:'⚠️',auth_error:'❌',not_supported:'❌',timeout:'⏱',error:'⚠️'}[m.status]||m.status;
+        const mColor = m.status === 'available' ? 'var(--green)' : (m.status === 'rate_limited' ? 'var(--orange)' : 'var(--red)');
+        return `<tr>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text2)">${esc(m.key_preview||'')}</td>
+          <td style="color:${mColor};font-weight:600">${mLabel}</td>
+          <td style="font-size:12px">${m.elapsed != null ? m.elapsed.toFixed(2)+'s' : '-'}</td>
+          <td style="font-size:11px;color:var(--text2)">${m.error ? esc(m.error.slice(0,40)) : esc((m.content||'').slice(0,40))}</td>
+        </tr>`;
+      }).join('');
+      multiArea = `<div class="vr-label" style="margin-top:8px">多 Key 验证结果 (${r.multi_results.length} 个)</div>
+        <table class="multi-key-table" style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="text-align:left;color:var(--text2);border-bottom:1px solid var(--border)">
+            <th style="padding:4px 6px">Key</th>
+            <th style="padding:4px 6px">状态</th>
+            <th style="padding:4px 6px">耗时</th>
+            <th style="padding:4px 6px">详情</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+    
     resultArea = `<div class="validate-result">
       <div class="vr-row">
         <span class="dot ${r.status}" style="width:9px;height:9px"></span>
         <strong style="color:${statusColor}">${statusLabel}</strong>
         ${r.model ? `<span style="font-size:12px;color:var(--text2);margin-left:4px">${esc(r.model)}</span>` : ''}
-        ${r.error ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
+        ${r.error && !r.multi_results ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
       </div>
-      ${r.content ? `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>` : ''}
+      ${r.content && !r.multi_results ? `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>` : ''}
+      ${multiArea}
       <div class="vr-usage">
         ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}` : ''}
         ${r.elapsed != null ? `<span style="float:right">⏱${r.elapsed.toFixed(2)}s</span>` : ''}
@@ -463,10 +490,14 @@ function renderDetail() {
         </select>
       </div>
       <div class="form-group">
-        <label>API Key</label>
-        <div style="display:flex;gap:6px;align-items:center">
-          <input class="key-input" style="flex:1" value="${esc(maskKey(p.api_key||''))}" onchange="updField(${selectedIdx},'api_key',this.value)" onfocus="this.value=providersData[${selectedIdx}].api_key||''" onblur="this.value=maskKey(providersData[${selectedIdx}].api_key||'')" placeholder="sk-xxx / tp-xxx">
-          <button class="btn btn-secondary" style="flex-shrink:0;padding:6px 8px;font-size:12px" onclick="copyKey('${esc(p.name)}')" title="复制完整 Key">📋</button>
+        <label>API Key ${(() => { const ks = (p.api_key||'').split('\n').filter(k=>k.trim()); return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
+        <div style="display:flex;gap:6px;align-items:flex-start">
+          <textarea class="key-input" style="flex:1;min-height:35px;max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
+            onchange="updField(${selectedIdx},'api_key',this.value)" 
+            onfocus="this.value=providersData[${selectedIdx}].api_key||''" 
+            onblur="this.value=maskMultiKey(providersData[${selectedIdx}].api_key||'')" 
+            placeholder="sk-xxx / tp-xxx  (多个 key 换行分隔，每行一个)">${esc(maskMultiKey(p.api_key||''))}</textarea>
+          <button class="btn btn-secondary" style="flex-shrink:0;padding:6px 8px;font-size:12px" onclick="copyKey('${esc(p.name)}')" title="复制完整 Key(s)">📋</button>
         </div>
       </div>
       ${modelArea}
@@ -865,7 +896,7 @@ async function validateSingle(name) {
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
-    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream, elapsed: data.elapsed };
+    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream, elapsed: data.elapsed, multi_results: data.multi_results };
     // 超时翻倍：后端返回新 timeout 时更新本地
     if (data.timeout && p) {
       p.timeout = data.timeout;
@@ -1116,6 +1147,13 @@ function copyToClipboard(text, label) {
 function maskKey(key) {
   if (!key || key.length < 8) return key || '';
   return key.slice(0, 6) + '***' + key.slice(-4);
+}
+// 多 key 脱敏：每行一个 key，各自 mask，忽略空行
+function maskMultiKey(raw) {
+  if (!raw) return '';
+  const parts = raw.split('\n').map(k => k.trim()).filter(k => k);
+  if (parts.length <= 1) return maskKey(raw.trim());
+  return parts.map(k => maskKey(k)).join('\n');
 }
 function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
 

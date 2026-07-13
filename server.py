@@ -533,6 +533,10 @@ async def handle_save_config(request):
         if not key or "***" in key:
             lookup_key = (p.get("name", ""), p.get("base_url", ""))
             key = old_key_map.get(lookup_key, "")
+        # 多 key: 按行拆分，trim 每行，去空行，再拼回换行分隔
+        if key:
+            lines = [ln.strip() for ln in key.split("\n") if ln.strip()]
+            key = "\n".join(lines)
         merged.append({
             "name": p.get("name", ""),
             "type": p.get("type", "openai"),
@@ -700,33 +704,60 @@ async def handle_validate(request):
     if not model:
         return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
 
+    # 支持多 key（每行一个），逐个验证；忽略空行/纯空白行
+    keys = [k.strip() for k in api_key.split('\n') if k.strip()]
+    if not keys:
+        return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
+
+    all_results = []
     logs = []
+    timeout_changed = False
     async with aiohttp.ClientSession() as session:
-        if ptype == "openai":
-            result = await validate_openai(session, base_url, api_key, model, name, stream=stream, timeout=timeout)
+        for key_idx, ak in enumerate(keys):
+            if ptype == "openai":
+                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+            elif ptype == "anthropic":
+                result = await validate_anthropic(session, base_url, ak, model, name, timeout=timeout)
+            else:
+                return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
             log = result.get("log", {})
+            # 在日志中标注是第几个 key
+            log["key_index"] = key_idx
+            log["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
             logs.append(log)
             write_provider_log(name, log)
-        elif ptype == "anthropic":
-            result = await validate_anthropic(session, base_url, api_key, model, name, timeout=timeout)
-            log = result.get("log", {})
-            logs.append(log)
-            write_provider_log(name, log)
-        else:
-            return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
+            # 给 result 加 key 信息
+            result["key_index"] = key_idx
+            result["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+            all_results.append(result)
+            # 超时翻倍（取第一个超时的）
+            if result.get("status") == "timeout" and provider and not timeout_changed:
+                new_timeout = min(timeout * 2, 120)
+                provider["timeout"] = new_timeout
+                timeout_changed = True
 
-    # 超时则翻倍 timeout（上限 120s），持久化到 config
-    new_timeout = timeout
-    if result.get("status") == "timeout" and provider:
-        new_timeout = min(timeout * 2, 120)
-        provider["timeout"] = new_timeout
-        save_config(cfg)
-        result["timeout"] = new_timeout
-    elif provider and "timeout" not in provider:
-        provider["timeout"] = 30
+    if provider and ("timeout" not in provider or timeout_changed):
+        if not timeout_changed:
+            provider["timeout"] = 30
         save_config(cfg)
 
-    return web.json_response({**result, "logs": logs})
+    # 汇总结果：所有 key 都 available → available，否则取最差状态
+    statuses = [r.get("status", "error") for r in all_results]
+    if all(s == "available" for s in statuses):
+        overall_status = "available"
+    elif any(s == "auth_error" for s in statuses):
+        overall_status = "mixed" if any(s == "available" for s in statuses) else "auth_error"
+    else:
+        overall_status = statuses[0] if statuses else "error"
+
+    # 返回第一个 result 的字段作为主响应，附加 multi_results
+    first = all_results[0]
+    return web.json_response({
+        **first,
+        "status": overall_status,
+        "multi_results": all_results if len(keys) > 1 else None,
+        "logs": logs,
+    })
 
 
 async def handle_validate_all(request):
