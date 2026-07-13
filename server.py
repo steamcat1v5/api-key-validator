@@ -704,33 +704,41 @@ async def handle_validate(request):
     if not model:
         return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
 
-    # 支持多 key（每行一个），逐个验证；忽略空行/纯空白行
+    # 支持多 key（每行一个），并发验证；忽略空行/纯空白行
     keys = [k.strip() for k in api_key.split('\n') if k.strip()]
     if not keys:
         return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
+
+    async def validate_one_key(key_idx, ak):
+        """验证单个 key，返回 (result, log)"""
+        if ptype == "openai":
+            result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+        elif ptype == "anthropic":
+            result = await validate_anthropic(session, base_url, ak, model, name, timeout=timeout)
+        else:
+            return None, None
+        log = result.get("log", {})
+        log["key_index"] = key_idx
+        log["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+        result["key_index"] = key_idx
+        result["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+        return result, log
 
     all_results = []
     logs = []
     timeout_changed = False
     async with aiohttp.ClientSession() as session:
-        for key_idx, ak in enumerate(keys):
-            if ptype == "openai":
-                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
-            elif ptype == "anthropic":
-                result = await validate_anthropic(session, base_url, ak, model, name, timeout=timeout)
-            else:
-                return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
-            log = result.get("log", {})
-            # 在日志中标注是第几个 key
-            log["key_index"] = key_idx
-            log["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+        if ptype not in ("openai", "anthropic"):
+            return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
+        # 并发验证所有 key
+        tasks = [validate_one_key(i, ak) for i, ak in enumerate(keys)]
+        done = await asyncio.gather(*tasks)
+        for result, log in done:
+            if result is None:
+                continue
+            all_results.append(result)
             logs.append(log)
             write_provider_log(name, log)
-            # 给 result 加 key 信息
-            result["key_index"] = key_idx
-            result["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
-            all_results.append(result)
-            # 超时翻倍（取第一个超时的）
             if result.get("status") == "timeout" and provider and not timeout_changed:
                 new_timeout = min(timeout * 2, 120)
                 provider["timeout"] = new_timeout
