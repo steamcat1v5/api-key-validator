@@ -7,8 +7,18 @@ providers:
     type: openai              # openai 或 anthropic
     source_url: ""            # 获取 API Key 的网址（可选）
     base_url: "https://api.example.com/v1"
-    api_key: "sk-xxxxxxxx"
+    api_keys:                 # 支持多个 key，每行一个
+      - "sk-xxxxxxxx"
+      - "sk-yyyyyyyy"
     models: []                # 点击「📡 获取模型」自动填充
     selected_model: ""        # 获取模型后自动选择，也可手动输入
+
+  - name: "单 Key 示例"
+    type: openai
+    base_url: "https://api.openai.com/v1"
+    api_keys:
+      - "sk-single-key"
+    models: []
+    selected_model: ""
 
 stream: false
