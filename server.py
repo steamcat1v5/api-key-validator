@@ -251,11 +251,7 @@ def load_config():
             p.setdefault("models", [])
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
-            # 兼容: api_keys (list) → api_key (多行 string)，中间逻辑统一用 api_key
-            if "api_keys" in p and "api_key" not in p:
-                keys = p.pop("api_keys")
-                p["api_key"] = "\n".join(keys) if isinstance(keys, list) else str(keys or "")
-            p.setdefault("api_key", "")
+            p.setdefault("api_keys", [])
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
         return cfg
@@ -263,16 +259,8 @@ def load_config():
 
 
 def save_config(cfg):
-    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失
-    
-    存储格式: api_keys (YAML list)，比换行分隔的 string 更直观
-    """
+    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失"""
     import tempfile, os
-    # 写入前把 api_key (多行 string) 转为 api_keys (list)，删除 api_key
-    for p in cfg.get("providers", []):
-        ak = p.pop("api_key", "")
-        p["api_keys"] = [k.strip() for k in ak.split("\n") if k.strip()] if ak else []
-        # 保持 api_keys 在固定位置（name/type/base_url 之后）
     tmp_fd = None
     tmp_path = None
     try:
@@ -539,26 +527,22 @@ async def handle_save_config(request):
     new_providers = body.get("providers", [])
     old_cfg = load_config()
     old_providers = old_cfg.get("providers", [])
-    old_key_map = {(p.get("name", ""), p.get("base_url", "")): p.get("api_key", "") for p in old_providers}
+    old_key_map = {(p.get("name", ""), p.get("base_url", "")): p.get("api_keys", []) for p in old_providers}
 
     merged = []
     old_status_map = {p.get("base_url", ""): p.get("last_status") for p in old_providers}
     for p in new_providers:
-        key = p.get("api_key", "")
-        if not key or "***" in key:
+        keys = p.get("api_keys", [])
+        if not keys or all("***" in k for k in keys):
             lookup_key = (p.get("name", ""), p.get("base_url", ""))
-            key = old_key_map.get(lookup_key, "")
-        # 多 key: 按行拆分，trim 每行，去空行，再拼回换行分隔
-        if key:
-            lines = [ln.strip() for ln in key.split("\n") if ln.strip()]
-            key = "\n".join(lines)
+            keys = old_key_map.get(lookup_key, [])
         # 保留旧 last_status（前端不传此字段）
         ls = p.get("last_status") or old_status_map.get(p.get("base_url", ""))
         merged.append({
             "name": p.get("name", ""),
             "type": p.get("type", "openai"),
             "base_url": p.get("base_url", ""),
-            "api_key": key,
+            "api_keys": keys,
             "models": p.get("models", []),
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
@@ -604,7 +588,7 @@ async def handle_fetch_models(request):
     body = await request.json()
     name = body.get("name")
     base_url = body.get("base_url", "")
-    api_key = body.get("api_key", "")
+    api_keys = body.get("api_keys", [])
     ptype = body.get("type", "openai")
 
     # 优先用前端传来的完整信息，凑不齐再从 config 查
@@ -612,29 +596,29 @@ async def handle_fetch_models(request):
     providers = cfg.get("providers", [])
     provider = next((p for p in providers if p["name"] == name), None)
 
-    if not provider and not (base_url and api_key):
-        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_key)"}, status=404)
+    if not provider and not (base_url and api_keys):
+        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_keys)"}, status=404)
 
     # 合并：config 里的作为基础，前端传来的字段覆盖
     if provider:
         base_url = base_url or provider.get("base_url", "")
-        api_key = api_key or provider.get("api_key", "")
+        api_keys = api_keys or provider.get("api_keys", [])
         ptype = ptype if ptype != "openai" or provider.get("type") else provider.get("type", "openai")
     else:
         # 新 provider 不在 config 中，先插入到 config 以便后续保存模型列表
-        provider = {"name": name, "type": ptype, "base_url": base_url, "api_key": api_key,
+        provider = {"name": name, "type": ptype, "base_url": base_url, "api_keys": api_keys,
                      "models": [], "selected_model": "", "source_url": body.get("source_url", "")}
         providers.append(provider)
         cfg["providers"] = providers
 
     # key 脱敏还原：如果前端传来带 *** 的 key，从 config 里取真实值
-    if "***" in api_key and provider:
-        api_key = provider.get("api_key", api_key)
+    if api_keys and all("***" in k for k in api_keys) and provider:
+        api_keys = provider.get("api_keys", api_keys)
 
     logs = []
     async with aiohttp.ClientSession() as session:
         if ptype == "openai":
-            result = await fetch_models_openai(session, base_url, api_key, name)
+            result = await fetch_models_openai(session, base_url, api_keys[0] if api_keys else "", name)
             logs.append(result["log"])
             write_provider_log(name, result.get("log", {}))
             if result["ok"]:
@@ -668,7 +652,7 @@ async def handle_fetch_all_models(request):
                 results.append({"name": p.get("name", ""), "ok": False, "error": "缺少配置"})
                 continue
             if p["type"] == "openai":
-                result = await fetch_models_openai(session, p["base_url"], p["api_key"], p["name"])
+                result = await fetch_models_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", p["name"])
                 all_logs.append({**result["log"], "provider": p["name"]})
                 write_provider_log(p["name"], result.get("log", {}))
                 if result["ok"]:
@@ -694,7 +678,7 @@ async def handle_validate(request):
     name = body.get("name")
     stream = body.get("stream", False)
     base_url = body.get("base_url", "")
-    api_key = body.get("api_key", "")
+    api_keys = body.get("api_keys", [])
     model = body.get("model", "")  # 前端可直接传模型名
     ptype = body.get("type", "openai")
 
@@ -702,17 +686,17 @@ async def handle_validate(request):
     providers = cfg.get("providers", [])
     provider = next((p for p in providers if p["name"] == name), None)
 
-    if not provider and not (base_url and api_key):
-        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_key)"}, status=404)
+    if not provider and not (base_url and api_keys):
+        return web.json_response({"error": "provider not found (需要先保存或传入 base_url + api_keys)"}, status=404)
 
     if provider:
         base_url = base_url or provider.get("base_url", "")
-        api_key = api_key or provider.get("api_key", "")
+        api_keys = api_keys or provider.get("api_keys", [])
         ptype = ptype or provider.get("type", "openai")
         model = model or provider.get("selected_model", "")
         timeout = provider.get("timeout", 30)
-        if "***" in api_key:
-            api_key = provider.get("api_key", api_key)
+        if api_keys and all("***" in k for k in api_keys):
+            api_keys = provider.get("api_keys", api_keys)
     else:
         timeout = 30
         # 不在 config 中且前端没传 model → 报错
@@ -722,8 +706,8 @@ async def handle_validate(request):
     if not model:
         return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
 
-    # 支持多 key（每行一个），并发验证；忽略空行/纯空白行
-    keys = [k.strip() for k in api_key.split('\n') if k.strip()]
+    # 支持多 key，并发验证；忽略空值
+    keys = [k.strip() for k in api_keys if k.strip()]
     if not keys:
         return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
 
@@ -813,9 +797,9 @@ async def handle_validate_all(request):
         timeout = p.get("timeout", 30)
         result = None
         if p["type"] == "openai":
-            result = await validate_openai(session, p["base_url"], p["api_key"], model, p["name"], stream=stream, timeout=timeout)
+            result = await validate_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
         elif p["type"] == "anthropic":
-            result = await validate_anthropic(session, p["base_url"], p["api_key"], model, p["name"], timeout=timeout)
+            result = await validate_anthropic(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], timeout=timeout)
         else:
             return {"name": p["name"], "ok": False, "status": "error", "error": f"不支持的类型: {p['type']}"}, None
         log = result.get("log", {})

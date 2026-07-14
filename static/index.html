@@ -281,11 +281,11 @@ let busySet = new Set(); // 批量验证中尚未完成的 provider 集合
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
 
 // ─── 快照 & 脏检测 ─────────────────
-const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_key', 'source_url', 'selected_model'];
+const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model'];
 
 function takeSnapshot(p) {
   const snap = {};
-  for (const f of SAVE_FIELDS) snap[f] = p[f] || '';
+  for (const f of SAVE_FIELDS) snap[f] = JSON.stringify(p[f] || (f === 'api_keys' ? [] : ''));
   return snap;
 }
 
@@ -304,7 +304,8 @@ function checkDirty(i) {
   if (!snap) { dirtyMap[i] = true; return true; }
   let changed = false;
   for (const f of SAVE_FIELDS) {
-    if ((p[f] || '') !== (snap[f] || '')) { changed = true; break; }
+    const cur = JSON.stringify(p[f] || (f === 'api_keys' ? [] : ''));
+    if (cur !== snap[f]) { changed = true; break; }
   }
   if (changed) dirtyMap[i] = true; else delete dirtyMap[i];
   return changed;
@@ -496,13 +497,13 @@ function renderDetail() {
         </select>
       </div>
       <div class="form-group">
-        <label>API Key ${(() => { const ks = (p.api_key||'').split('\n').filter(k=>k.trim()); return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
+        <label>API Key ${(() => { const ks = p.api_keys||[]; return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
         <div style="display:flex;gap:6px;align-items:flex-start">
           <textarea class="key-input" style="flex:1;min-height:35px;max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
-            onchange="updField(${selectedIdx},'api_key',this.value)" 
-            onfocus="this.value=providersData[${selectedIdx}].api_key||''" 
-            onblur="this.value=maskMultiKey(providersData[${selectedIdx}].api_key||'')" 
-            placeholder="sk-xxx / tp-xxx  (多个 key 换行分隔，每行一个)">${esc(maskMultiKey(p.api_key||''))}</textarea>
+            onchange="updField(${selectedIdx},'api_keys',this.value.split('\\n').map(k=>k.trim()).filter(k=>k))"
+            onfocus="this.value=(providersData[${selectedIdx}].api_keys||[]).join('\\n')"
+            onblur="this.value=maskMultiKey((providersData[${selectedIdx}].api_keys||[]).join('\\n'))"
+            placeholder="sk-xxx / tp-xxx  (多个 key 换行分隔，每行一个)">${esc(maskMultiKey((p.api_keys||[]).join('\\n')))}</textarea>
           <button class="btn btn-secondary" style="flex-shrink:0;padding:6px 8px;font-size:12px" onclick="copyKey('${esc(p.name)}')" title="复制完整 Key(s)">📋</button>
         </div>
       </div>
@@ -734,7 +735,7 @@ async function loadProviderLogs(name) {
 }
 
 function addProvider() {
-  providersData.push({ name: '', type: 'openai', base_url: '', api_key: '', models: [], selected_model: '', source_url: '' });
+  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '' });
   selectedIdx = providersData.length - 1;
   // 新增 provider 没有快照，checkDirty 会自动标记为 dirty
   checkDirty(selectedIdx);
@@ -791,7 +792,7 @@ async function saveProvider(i) {
   const payload = {
     providers: providersData.map(pp => ({
       name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
-      api_key: pp.api_key||'', models: pp.models||[], selected_model: pp.selected_model||'',
+      api_keys: pp.api_keys||[], models: pp.models||[], selected_model: pp.selected_model||'',
       source_url: pp.source_url||''
     })),
     selected_idx: selectedIdx
@@ -816,7 +817,7 @@ async function saveConfig(silent) {
   const payload = {
     providers: providersData.map(p => ({
       name: p.name, type: p.type||'openai', base_url: p.base_url,
-      api_key: p.api_key||'', models: p.models||[], selected_model: p.selected_model||'',
+      api_keys: p.api_keys||[], models: p.models||[], selected_model: p.selected_model||'',
       source_url: p.source_url||''
     })),
     selected_idx: selectedIdx
@@ -844,7 +845,7 @@ async function fetchModels(name) {
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能获取模型
     const p = providersData.find(x => x.name === name);
-    const payload = p ? { name, base_url: p.base_url, api_key: p.api_key, type: p.type || 'openai' } : { name };
+    const payload = p ? { name, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai' } : { name };
     const resp = await fetch(`${API}/api/fetch-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
@@ -897,7 +898,7 @@ async function validateSingle(name) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_key: p.api_key, type: p.type || 'openai', model: p.selected_model || '' }
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '' }
       : { name, stream };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
@@ -1080,11 +1081,11 @@ function copyCurlModels(platform) {
   if (selectedIdx < 0) { showToast('⚠️ 请先选择或添加一个 Provider', 'error', 4000); return; }
   const p = providersData[selectedIdx];
   if (!p.base_url) { showToast('⚠️ 请先填写 Base URL', 'error', 4000); return; }
-  if (!p.api_key) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
+  if (!p.api_keys || !p.api_keys.length) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
 
   const base = normalizeBaseUrl(p.base_url);
   const url = base + '/models';
-  const curl = buildCurl('GET', url, {'Authorization': 'Bearer ' + p.api_key}, platform);
+  const curl = buildCurl('GET', url, {'Authorization': 'Bearer ' + p.api_keys[0]}, platform);
   copyToClipboard(curl, platform === 'linux' ? '🐧 models' : '🪟 models');
 }
 
@@ -1092,18 +1093,18 @@ function copyCurlValidate(platform) {
   if (selectedIdx < 0) { showToast('⚠️ 请先选择或添加一个 Provider', 'error', 4000); return; }
   const p = providersData[selectedIdx];
   if (!p.base_url) { showToast('⚠️ 请先填写 Base URL', 'error', 4000); return; }
-  if (!p.api_key) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
+  if (!p.api_keys || !p.api_keys.length) { showToast('⚠️ 请先填写 API Key', 'error', 4000); return; }
   if (!p.selected_model) { showToast('⚠️ 请先选择或输入模型名称', 'error', 4000); return; }
 
   const base = normalizeBaseUrl(p.base_url);
   let url, headers, body;
   if (p.type === 'anthropic') {
     url = base + '/v1/messages';
-    headers = {'x-api-key': p.api_key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json'};
+    headers = {'x-api-key': p.api_keys[0], 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json'};
     body = JSON.stringify({model: p.selected_model, max_tokens: 50, messages: [{role: 'user', content: 'hi'}]});
   } else {
     url = base + '/chat/completions';
-    headers = {'Authorization': 'Bearer ' + p.api_key, 'Content-Type': 'application/json'};
+    headers = {'Authorization': 'Bearer ' + p.api_keys[0], 'Content-Type': 'application/json'};
     body = JSON.stringify({model: p.selected_model, messages: [{role: 'user', content: 'hi'}], max_tokens: 50});
   }
   const curl = buildCurl('POST', url, headers, platform, body);
@@ -1172,7 +1173,7 @@ async function saveStreamSetting() {
 
 function copyKey(name) {
   const p = providersData.find(x => x.name === name);
-  const key = p ? (p.api_key || '') : '';
+  const key = p ? (p.api_keys || []).join('\n') : '';
   if (!key) { showToast('⚠️ 无 Key 可复制', 'error'); return; }
   // fallback: 使用 textarea 复制，兼容非 HTTPS 环境
   const ta = document.createElement('textarea');
