@@ -252,7 +252,7 @@ def load_config():
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
             p.setdefault("api_keys", [])
-            p.setdefault("timeout", 30)
+            p.setdefault("timeout", 60)
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
         return cfg
@@ -363,7 +363,7 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
         return {"ok": False, "error": str(e), "models": [], "log": log}
 
 
-async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=30):
+async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60):
     """OpenAI 协议: POST /v1/chat/completions"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/chat/completions"
@@ -453,7 +453,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
         return {"ok": False, "status": "error", "model": model, "error": str(e), "log": log}
 
 
-async def validate_anthropic(session, base_url, api_key, model, provider_name, timeout=30):
+async def validate_anthropic(session, base_url, api_key, model, provider_name, timeout=60):
     """Anthropic 协议: POST /v1/messages"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/messages"
@@ -547,7 +547,7 @@ async def handle_save_config(request):
             "models": p.get("models", []),
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
-            "timeout": p.get("timeout", 30),
+            "timeout": p.get("timeout", 60),
             "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
@@ -696,11 +696,11 @@ async def handle_validate(request):
         api_keys = api_keys or provider.get("api_keys", [])
         ptype = ptype or provider.get("type", "openai")
         model = model or provider.get("selected_model", "")
-        timeout = body.get("timeout") or provider.get("timeout", 30)
+        timeout = body.get("timeout") or provider.get("timeout", 60)
         if api_keys and all("***" in k for k in api_keys):
             api_keys = provider.get("api_keys", api_keys)
     else:
-        timeout = 30
+        timeout = 60
         # 不在 config 中且前端没传 model → 报错
         if not model:
             return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
@@ -787,7 +787,7 @@ async def handle_validate_all(request):
         model = p.get("selected_model", "")
         if not model:
             return {"name": p.get("name", ""), "ok": False, "status": "no_model", "error": "未选择模型"}, None
-        timeout = p.get("timeout", 30)
+        timeout = p.get("timeout", 60)
         result = None
         if p["type"] == "openai":
             result = await validate_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
@@ -803,7 +803,7 @@ async def handle_validate_all(request):
             p["timeout"] = new_timeout
             r["timeout"] = new_timeout
         elif "timeout" not in p:
-            p["timeout"] = 30
+            p["timeout"] = 60
         return r, log
 
     resp = web.StreamResponse(status=200, headers={
