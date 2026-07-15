@@ -500,10 +500,10 @@ function renderDetail() {
         <label>API Key ${(() => { const ks = p.api_keys||[]; return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
         <div style="display:flex;gap:6px;align-items:flex-start">
           <textarea class="key-input" style="flex:1;min-height:35px;max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
-            onchange="updField(${selectedIdx},'api_keys',this.value.split('\\n').map(k=>k.trim()).filter(k=>k))"
-            onfocus="this.value=(providersData[${selectedIdx}].api_keys||[]).join('\\n')"
-            onblur="this.value=maskMultiKey((providersData[${selectedIdx}].api_keys||[]).join('\\n'))"
-            placeholder="sk-xxx / tp-xxx  (多个 key 换行分隔，每行一个)">${esc(maskMultiKey((p.api_keys||[]).join('\\n')))}</textarea>
+            onchange="updField(${selectedIdx},'api_keys',this.value.split(String.fromCharCode(10)).map(k=>k.trim()).filter(k=>k))"
+            onfocus="this.value=keysToText(providersData[${selectedIdx}].api_keys)"
+            onblur="this.value=maskMultiKey(keysToText(providersData[${selectedIdx}].api_keys))"
+            placeholder="sk-xxx / tp-xxx  (多个 key 换行分隔，每行一个)">${esc(maskMultiKey(keysToText(p.api_keys)))}</textarea>
           <button class="btn btn-secondary" style="flex-shrink:0;padding:6px 8px;font-size:12px" onclick="copyKey('${esc(p.name)}')" title="复制完整 Key(s)">📋</button>
         </div>
       </div>
@@ -1155,11 +1155,15 @@ function maskKey(key) {
   if (!key || key.length < 8) return key || '';
   return key.slice(0, 6) + '***' + key.slice(-4);
 }
+// 把 api_keys array 转成换行分隔的 textarea 文本
+function keysToText(keys) {
+  return (keys || []).join('\n');
+}
 // 多 key 脱敏：每行一个 key，各自 mask，忽略空行
 function maskMultiKey(raw) {
   if (!raw) return '';
-  const parts = raw.split('\n').map(k => k.trim()).filter(k => k);
-  if (parts.length <= 1) return maskKey(raw.trim());
+  const parts = String(raw).split('\n').map(k => k.trim()).filter(k => k);
+  if (parts.length <= 1) return maskKey(String(raw).trim());
   return parts.map(k => maskKey(k)).join('\n');
 }
 function setBusy(b) { busy = b; if (b) renderAll(); else renderAll(); }
