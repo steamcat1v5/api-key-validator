@@ -252,6 +252,7 @@ def load_config():
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
             p.setdefault("api_keys", [])
+            p.setdefault("timeout", 30)
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
         return cfg
@@ -546,6 +547,7 @@ async def handle_save_config(request):
             "models": p.get("models", []),
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
+            "timeout": p.get("timeout", 30),
             "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
@@ -728,7 +730,6 @@ async def handle_validate(request):
 
     all_results = []
     logs = []
-    timeout_changed = False
     async with aiohttp.ClientSession() as session:
         if ptype not in ("openai", "anthropic"):
             return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
@@ -741,16 +742,8 @@ async def handle_validate(request):
             all_results.append(result)
             logs.append(log)
             write_provider_log(name, log)
-            if result.get("status") == "timeout" and provider and not timeout_changed:
-                new_timeout = min(timeout * 2, 120)
-                provider["timeout"] = new_timeout
-                timeout_changed = True
 
-    if provider and ("timeout" not in provider or timeout_changed):
-        if not timeout_changed:
-            provider["timeout"] = 30
-        save_config(cfg)
-
+    # 持久化 last_status（timeout 已由前端设置，不再自动翻倍）
     # 汇总结果：所有 key 都 available → available，否则取最差状态
     statuses = [r.get("status", "error") for r in all_results]
     if all(s == "available" for s in statuses):

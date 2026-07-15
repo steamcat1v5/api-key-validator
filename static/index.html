@@ -281,7 +281,7 @@ let busySet = new Set(); // 批量验证中尚未完成的 provider 集合
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
 
 // ─── 快照 & 脏检测 ─────────────────
-const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model'];
+const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout'];
 
 function takeSnapshot(p) {
   const snap = {};
@@ -513,7 +513,7 @@ function renderDetail() {
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
-      <span style="margin-left:auto;font-size:11px;color:var(--text2);align-self:center">超时: ${(p.timeout||30)}s</span>
+      <select style="margin-left:auto;font-size:11px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 4px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||30)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
 }
@@ -735,7 +735,7 @@ async function loadProviderLogs(name) {
 }
 
 function addProvider() {
-  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '' });
+  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '', timeout: 30 });
   selectedIdx = providersData.length - 1;
   // 新增 provider 没有快照，checkDirty 会自动标记为 dirty
   checkDirty(selectedIdx);
@@ -793,7 +793,7 @@ async function saveProvider(i) {
     providers: providersData.map(pp => ({
       name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
       api_keys: pp.api_keys||[], models: pp.models||[], selected_model: pp.selected_model||'',
-      source_url: pp.source_url||''
+      source_url: pp.source_url||'', timeout: pp.timeout||30
     })),
     selected_idx: selectedIdx
   };
@@ -818,7 +818,7 @@ async function saveConfig(silent) {
     providers: providersData.map(p => ({
       name: p.name, type: p.type||'openai', base_url: p.base_url,
       api_keys: p.api_keys||[], models: p.models||[], selected_model: p.selected_model||'',
-      source_url: p.source_url||''
+      source_url: p.source_url||'', timeout: p.timeout||30
     })),
     selected_idx: selectedIdx
   };
