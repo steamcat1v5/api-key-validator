@@ -898,7 +898,7 @@ async function validateSingle(name) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '' }
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 30 }
       : { name, stream };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();

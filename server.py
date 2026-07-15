@@ -696,7 +696,7 @@ async def handle_validate(request):
         api_keys = api_keys or provider.get("api_keys", [])
         ptype = ptype or provider.get("type", "openai")
         model = model or provider.get("selected_model", "")
-        timeout = provider.get("timeout", 30)
+        timeout = body.get("timeout") or provider.get("timeout", 30)
         if api_keys and all("***" in k for k in api_keys):
             api_keys = provider.get("api_keys", api_keys)
     else:
