@@ -499,7 +499,7 @@ function renderDetail() {
       <div class="form-group">
         <label>API Key ${(() => { const ks = p.api_keys||[]; return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
         <div style="display:flex;gap:6px;align-items:flex-start">
-          <textarea class="key-input" style="flex:1;min-height:35px;max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
+          <textarea class="key-input" style="flex:1;min-height:35px;${(p.api_keys||[]).length > 1 ? 'height:120px;' : ''}max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
             onchange="updField(${selectedIdx},'api_keys',this.value.split(String.fromCharCode(10)).map(k=>k.trim()).filter(k=>k))"
             onfocus="this.value=keysToText(providersData[${selectedIdx}].api_keys)"
             onblur="this.value=maskMultiKey(keysToText(providersData[${selectedIdx}].api_keys))"
