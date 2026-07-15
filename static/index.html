@@ -513,7 +513,7 @@ function renderDetail() {
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
-      <select style="margin-left:auto;font-size:11px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 4px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||30)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
+      <select style="width:auto;font-size:11px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 4px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||30)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
 }
