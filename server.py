@@ -377,22 +377,19 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
     try:
         start = time.time()
         async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-            elapsed = time.time() - start
-            body = await resp.text()
             status = resp.status
-
             if stream and status == 200:
-                # 流式响应：截取前几行
-                lines = body.strip().split("\n")[:5]
-                preview = "\n".join(lines)
-                if len(body.strip().split("\n")) > 5:
-                    preview += f"\n... (共 {len(body.strip().split(chr(10)))} 行)"
-                resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status} (stream)\n{preview}"
-                log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
-                # 流式：拼接所有 delta.content
+                # 真正的流式读取：逐行接收，记录 TTFT 与总耗时
+                ttft = None
                 collected_content = ""
                 usage = {}
-                for line in body.strip().split("\n"):
+                first_lines = []  # 记录前几行用于日志
+                async for raw in resp.content:
+                    line = raw.decode("utf-8", "ignore").strip()
+                    if ttft is None:
+                        ttft = time.time() - start
+                    if len(first_lines) < 5:
+                        first_lines.append(line)
                     if line.startswith("data: ") and line != "data: [DONE]":
                         try:
                             chunk = json.loads(line[6:])
@@ -406,14 +403,23 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                                     collected_content += c
                         except Exception:
                             pass
+                elapsed = time.time() - start
+                preview = "\n".join(first_lines[:5])
+                if len(first_lines) >= 5:
+                    preview += f"\n... (TTFT={ttft:.2f}s, 总耗时={elapsed:.2f}s)"
+                resp_log = f"─── Response (TTFT={ttft:.2f}s, total={elapsed:.2f}s) ───\nHTTP {status} (stream)\n{preview}"
+                log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
                 return {
                     "ok": True, "status": "available", "model": model,
                     "stream": True, "usage": usage,
                     "content": collected_content[:80] if collected_content else "",
-                    "elapsed": elapsed,
+                    "elapsed": ttft if ttft else elapsed,  # 优先用 TTFT
+                    "ttft": ttft,
                     "log": log,
                 }
             else:
+                body = await resp.text()
+                elapsed = time.time() - start
                 body_json = None
                 try:
                     body_json = json.loads(body)
