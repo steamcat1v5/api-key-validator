@@ -459,48 +459,95 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
         return {"ok": False, "status": "error", "model": model, "error": str(e), "log": log}
 
 
-async def validate_anthropic(session, base_url, api_key, model, provider_name, timeout=60):
+async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60):
     """Anthropic 协议: POST /v1/messages"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/messages"
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
     payload = {"model": model, "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}
+    if stream:
+        payload["stream"] = True
 
     req_log = f"─── Request ───\nPOST {url}\n{fmt_headers(headers)}\n\n{fmt_json(payload)}"
 
     try:
         start = time.time()
         async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-            elapsed = time.time() - start
-            body = await resp.text()
             status = resp.status
-            body_json = None
-            try:
-                body_json = json.loads(body)
-                resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{fmt_json(body_json)}"
-            except Exception:
-                resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{body[:500]}"
-
-            log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
-
-            if status == 200:
-                if not isinstance(body_json, dict):
-                    return {"ok": False, "status": "error", "model": model, "error": "响应格式异常", "log": log}
-                usage = body_json.get("usage", {})
-                content = ""
-                content_arr = body_json.get("content", [])
-                if content_arr:
-                    content = content_arr[0].get("text", "")[:80]
-                return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "elapsed": elapsed, "log": log}
-            elif status == 401:
-                return {"ok": False, "status": "auth_error", "model": model, "log": log}
-            elif status == 429:
-                return {"ok": False, "status": "rate_limited", "model": model, "log": log}
-            elif status == 400:
-                err = body_json.get("error", {}).get("message", "") if isinstance(body_json, dict) else ""
-                return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "log": log}
+            if stream and status == 200:
+                # 真正的流式读取：逐行接收 SSE，记录 TTFT
+                ttft = None
+                collected_text = ""
+                usage = {}
+                first_lines = []
+                # Anthropic SSE 事件结构:
+                #   event: message_start / content_block_delta / message_delta / message_stop
+                #   data: {...}
+                # content_block_delta.data.delta.text = "text..."
+                # message_delta.data.usage = {...}
+                async for raw in resp.content:
+                    line = raw.decode("utf-8", "ignore").strip()
+                    if ttft is None and line:
+                        ttft = time.time() - start
+                    if len(first_lines) < 5:
+                        first_lines.append(line)
+                    if line.startswith("data: "):
+                        try:
+                            chunk = json.loads(line[6:])
+                            ev_type = chunk.get("type", "")
+                            if ev_type == "content_block_delta":
+                                delta = chunk.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    collected_text += delta.get("text", "")
+                            elif ev_type == "message_delta":
+                                if chunk.get("usage"):
+                                    usage = chunk["usage"]
+                        except Exception:
+                            pass
+                elapsed = time.time() - start
+                preview = "\n".join(first_lines[:5])
+                if len(first_lines) >= 5:
+                    preview += f"\n... (TTFT={ttft:.2f}s, 总耗时={elapsed:.2f}s)"
+                resp_log = f"─── Response (TTFT={ttft:.2f}s, total={elapsed:.2f}s) ───\nHTTP {status} (stream)\n{preview}"
+                log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
+                return {
+                    "ok": True, "status": "available", "model": model,
+                    "stream": True, "usage": usage,
+                    "content": collected_text[:80] if collected_text else "",
+                    "elapsed": ttft if ttft else elapsed,
+                    "ttft": ttft,
+                    "log": log,
+                }
             else:
-                return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
+                body = await resp.text()
+                elapsed = time.time() - start
+                body_json = None
+                try:
+                    body_json = json.loads(body)
+                    resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{fmt_json(body_json)}"
+                except Exception:
+                    resp_log = f"─── Response ({elapsed:.2f}s) ───\nHTTP {status}\n{body[:500]}"
+
+                log = {"provider": provider_name, "method": "POST", "url": url, "status": str(status), "detail": f"{req_log}\n\n{resp_log}"}
+
+                if status == 200:
+                    if not isinstance(body_json, dict):
+                        return {"ok": False, "status": "error", "model": model, "error": "响应格式异常", "log": log}
+                    usage = body_json.get("usage", {})
+                    content = ""
+                    content_arr = body_json.get("content", [])
+                    if content_arr:
+                        content = content_arr[0].get("text", "")[:80]
+                    return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "elapsed": elapsed, "log": log}
+                elif status == 401:
+                    return {"ok": False, "status": "auth_error", "model": model, "log": log}
+                elif status == 429:
+                    return {"ok": False, "status": "rate_limited", "model": model, "log": log}
+                elif status == 400:
+                    err = body_json.get("error", {}).get("message", "") if isinstance(body_json, dict) else ""
+                    return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "log": log}
+                else:
+                    return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
     except asyncio.TimeoutError:
         log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s)"}
         return {"ok": False, "status": "timeout", "model": model, "log": log}
@@ -724,7 +771,7 @@ async def handle_validate(request):
         if ptype == "openai":
             result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
         elif ptype == "anthropic":
-            result = await validate_anthropic(session, base_url, ak, model, name, timeout=timeout)
+            result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout)
         else:
             return None, None
         log = result.get("log", {})
@@ -798,7 +845,7 @@ async def handle_validate_all(request):
         if p["type"] == "openai":
             result = await validate_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
         elif p["type"] == "anthropic":
-            result = await validate_anthropic(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], timeout=timeout)
+            result = await validate_anthropic(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
         else:
             return {"name": p["name"], "ok": False, "status": "error", "error": f"不支持的类型: {p['type']}"}, None
         log = result.get("log", {})
