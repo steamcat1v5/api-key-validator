@@ -385,8 +385,8 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
 
     req_log = f"─── Request ───\nPOST {url}\n{fmt_headers(headers)}\n\n{fmt_json(payload)}"
 
+    start = time.time()
     try:
-        start = time.time()
         async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             status = resp.status
             if stream and status == 200:
@@ -463,11 +463,18 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                 else:
                     return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
     except asyncio.TimeoutError:
-        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s)"}
-        return {"ok": False, "status": "timeout", "model": model, "log": log}
+        elapsed = time.time() - start
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s, 耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "timeout", "model": model, "elapsed": elapsed, "log": log}
+    except asyncio.CancelledError:
+        elapsed = time.time() - start
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏹ Cancelled (耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "cancelled", "model": model, "elapsed": elapsed, "log": log}
     except Exception as e:
-        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n❌ {e}"}
-        return {"ok": False, "status": "error", "model": model, "error": str(e), "log": log}
+        elapsed = time.time() - start
+        err_msg = str(e) or type(e).__name__
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n❌ {err_msg} (耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "error", "model": model, "error": err_msg, "elapsed": elapsed, "log": log}
 
 
 async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60):
@@ -481,8 +488,8 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
 
     req_log = f"─── Request ───\nPOST {url}\n{fmt_headers(headers)}\n\n{fmt_json(payload)}"
 
+    start = time.time()
     try:
-        start = time.time()
         async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             status = resp.status
             if stream and status == 200:
@@ -560,11 +567,18 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
                 else:
                     return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
     except asyncio.TimeoutError:
-        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s)"}
-        return {"ok": False, "status": "timeout", "model": model, "log": log}
+        elapsed = time.time() - start
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s, 耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "timeout", "model": model, "elapsed": elapsed, "log": log}
+    except asyncio.CancelledError:
+        elapsed = time.time() - start
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏹ Cancelled (耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "cancelled", "model": model, "elapsed": elapsed, "log": log}
     except Exception as e:
-        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n❌ {e}"}
-        return {"ok": False, "status": "error", "model": model, "error": str(e), "log": log}
+        elapsed = time.time() - start
+        err_msg = str(e) or type(e).__name__
+        log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n❌ {err_msg} (耗时 {elapsed:.2f}s)"}
+        return {"ok": False, "status": "error", "model": model, "error": err_msg, "elapsed": elapsed, "log": log}
 
 
 # ─── Web 路由 ──────────────────────────────────────────

@@ -993,10 +993,17 @@ function renderLiveKeyTableHTML(name) {
     }
     const statusVal = result.status || 'error';
     const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
-    const elapsedStr = (result.elapsed != null) ? result.elapsed.toFixed(2) + 's' : '-';
+    const elapsedStr = (result.elapsed != null) ? result.elapsed.toFixed(1) + 's' : '-';
     let detailStr = '';
-    if (result.error) detailStr = `<span class="lk-err">${esc(result.error.slice(0, 60))}</span>`;
-    else if (result.content) detailStr = esc(String(result.content).slice(0, 60));
+    if (result.error) {
+      // 错误时把耗时拼到末尾，让用户一眼看到「Server disconnected」经历了多久
+      const errWithElapsed = result.elapsed != null
+        ? `${result.error.slice(0, 50)} (${elapsedStr})`
+        : result.error.slice(0, 60);
+      detailStr = `<span class="lk-err">${esc(errWithElapsed)}</span>`;
+    } else if (result.content) {
+      detailStr = esc(String(result.content).slice(0, 60));
+    }
     const btnText = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
     return `<tr id="${rowId}">
       <td class="lk-key">${esc(k.key_preview || '')}</td>
