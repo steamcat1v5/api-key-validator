@@ -182,6 +182,63 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .validate-result .vr-content { background: var(--surface3); border-radius: 4px; padding: 6px 10px; font-size: 13px; color: var(--text); max-height: 120px; overflow-y: auto; word-break: break-all; }
 .validate-result .vr-usage { font-size: 12px; color: var(--text2); margin-top: 6px; }
 
+/* ─── 测试中实时 Key 表格 ─── */
+.live-key-table-wrap {
+  margin: 10px 16px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.live-key-table-wrap .lk-title {
+  font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 6px;
+}
+.live-key-table-wrap .lk-title .lk-spinner {
+  width: 11px; height: 11px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.6s linear infinite;
+  display: inline-block;
+}
+.live-key-table-wrap table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.live-key-table-wrap th {
+  text-align: left; color: var(--text2); font-weight: 600;
+  padding: 4px 6px; border-bottom: 1px solid var(--border);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.live-key-table-wrap td {
+  padding: 6px 6px; border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.live-key-table-wrap tr:last-child td { border-bottom: none; }
+.live-key-table-wrap .lk-key {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text2);
+}
+.live-key-table-wrap .lk-status { font-weight: 600; font-size: 12px; }
+.live-key-table-wrap .lk-status.pending { color: var(--text2); }
+.live-key-table-wrap .lk-status.available { color: var(--green); }
+.live-key-table-wrap .lk-status.cancelled { color: var(--orange); }
+.live-key-table-wrap .lk-status.rate_limited { color: var(--orange); }
+.live-key-table-wrap .lk-status.timeout { color: var(--orange); }
+.live-key-table-wrap .lk-status.auth_error { color: var(--red); }
+.live-key-table-wrap .lk-status.error { color: var(--red); }
+.live-key-table-wrap .lk-elapsed { font-size: 12px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
+.live-key-table-wrap .lk-detail { font-size: 11px; color: var(--text2); word-break: break-all; }
+.live-key-table-wrap .lk-detail .lk-err { color: var(--red); }
+.live-key-table-wrap .lk-stop {
+  padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;
+  background: #e74c3c22; color: var(--red); border: 1px solid #e74c3c44;
+  cursor: pointer; transition: all 0.15s; line-height: 1.4; white-space: nowrap;
+}
+.live-key-table-wrap .lk-stop:hover:not(:disabled) { background: #e74c3c44; }
+.live-key-table-wrap .lk-stop:disabled { opacity: 0.4; cursor: default; }
+.live-key-table-wrap .lk-stop.btn-stopping {
+  background: var(--surface3); color: var(--text2);
+  border: 1px solid var(--border);
+}
+
 /* ─── 日志 ─── */
 .log-panel { background: #0c0e14; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
 .log-header { padding: 8px 14px; background: var(--surface2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text2); flex-shrink: 0; }
@@ -891,9 +948,203 @@ function onModelInput(name, value) {
 }
 
 // ─── 验证 ─────────────────
+// 测试中实时 Key 表格渲染状态：{ [name]: { element, keys: [{key_index, key_preview}], doneCount, cancelledCount } }
+let liveKeyTableMap = {};
+
+// 状态符号与文案映射（与最终固化表格保持一致的语义）
+const KEY_STATUS_SYMBOL = {
+  available: '✅ 已可用',
+  auth_error: '❌ 认证失败',
+  rate_limited: '⚠️ 限速',
+  timeout: '⏱ 超时',
+  cancelled: '⏹ 已停止',
+  error: '⚠️ 错误',
+  not_supported: '❌ 模型不支持',
+};
+
+function ensureLiveKeyTableWrap(name) {
+  // 找到当前详情卡片的 detail-actions，在其后插入一个 wrap div
+  // 如果已存在则直接复用
+  const wrapId = `live-key-table-${cssEscape(name)}`;
+  let wrap = document.getElementById(wrapId);
+  if (wrap) return wrap;
+  const el = document.getElementById('detailContent');
+  const detailActions = el.querySelector('.detail-actions');
+  // 确保插入到 detail-actions 之后、卡片容器之外（作为 detailContent 的子元素）
+  wrap = document.createElement('div');
+  wrap.id = wrapId;
+  wrap.className = 'live-key-table-wrap';
+  if (detailActions && detailActions.parentNode === el) {
+    el.insertBefore(wrap, detailActions.nextSibling);
+  } else {
+    // 退化：直接附加到 detailContent 末尾
+    el.appendChild(wrap);
+  }
+  return wrap;
+}
+
+function cssEscape(s) {
+  // 仅用于构造 id，避免特殊字符破坏选择器；这里用encodeURIComponent 后去掉不安全字符
+  return encodeURIComponent(String(s || '')).replace(/[!'()*]/g, function (c) {
+    return '%' + c.charCodeAt(0).toString(16);
+  });
+}
+
+function renderLiveKeyTableSkeleton(name, keys) {
+  const wrap = ensureLiveKeyTableWrap(name);
+  const escName = esc(name);
+  // 标题：显示 spinner + 「测试中...」
+  const rows = keys.map(k => {
+    const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
+    return `<tr id="${rowId}">
+      <td class="lk-key">${esc(k.key_preview || '')}</td>
+      <td class="lk-status pending">⏳ 测试中...</td>
+      <td class="lk-elapsed">-</td>
+      <td class="lk-detail"></td>
+      <td>
+        <button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button>
+      </td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `
+    <div class="lk-title">
+      <span class="lk-spinner"></span>
+      测试中实时状态 (${keys.length} 个 Key)
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>状态</th>
+          <th>耗时</th>
+          <th>详情</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+  liveKeyTableMap[name] = { element: wrap, keys, doneCount: 0, cancelledCount: 0, total: keys.length };
+  // 更新标题："测试中实时状态 (N 个 Key)" — 上方已包含
+}
+
+function updateLiveKeyRow(name, result) {
+  const rowId = `keyrow-${cssEscape(name)}-${result.key_index}`;
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const statusVal = result.status || 'error';
+  const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
+  const statusCell = row.querySelector('.lk-status');
+  if (statusCell) {
+    statusCell.className = `lk-status ${statusVal}`;
+    statusCell.textContent = statusLabel;
+    // 对于 error 状态，附带 error 文本
+    if (statusVal === 'error' && result.error) {
+      const errSpan = document.createElement('span');
+      errSpan.style.fontSize = '11px';
+      errSpan.style.color = 'var(--text2)';
+      errSpan.style.marginLeft = '4px';
+      errSpan.textContent = '— ' + result.error.slice(0, 40);
+      statusCell.appendChild(errSpan);
+    } else if (statusVal === 'cancelled') {
+      // 已停止的话，文字本身就够了
+    }
+  }
+  const elapsedCell = row.querySelector('.lk-elapsed');
+  if (elapsedCell) {
+    if (result.elapsed != null) {
+      elapsedCell.textContent = result.elapsed.toFixed(2) + 's';
+    } else if (statusVal === 'cancelled') {
+      elapsedCell.textContent = '-';
+    } else {
+      elapsedCell.textContent = '-';
+    }
+  }
+  const detailCell = row.querySelector('.lk-detail');
+  if (detailCell) {
+    if (result.error) {
+      detailCell.innerHTML = `<span class="lk-err">${esc(result.error.slice(0, 60))}</span>`;
+    } else if (result.content) {
+      detailCell.textContent = String(result.content).slice(0, 60);
+    } else {
+      detailCell.textContent = '';
+    }
+  }
+  // 把「停止」按钮禁用并改成完成状态
+  const stopBtn = row.querySelector('.lk-stop');
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.textContent = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
+    stopBtn.classList.remove('btn-stopping');
+  }
+  // 更新计数
+  if (liveKeyTableMap[name]) {
+    liveKeyTableMap[name].doneCount += 1;
+    if (statusVal === 'cancelled') {
+      liveKeyTableMap[name].cancelledCount++;
+    }
+    // 更新标题（progress）
+    const titleEl = liveKeyTableMap[name].element.querySelector('.lk-title');
+    if (titleEl) {
+      const total = liveKeyTableMap[name].total;
+      const doneCnt = liveKeyTableMap[name].doneCount;
+      const remaining = Math.max(0, total - doneCnt);
+      // 没剩余就隐藏 spinner（done 事件会移除整个块）
+      const spinnerHTML = remaining > 0 ? '<span class="lk-spinner"></span> ' : '';
+      titleEl.innerHTML = `${spinnerHTML}测试中实时状态 (${total} 个 Key · ${doneCnt}/${total} 完成)`;
+    }
+  }
+}
+
+function clearLiveKeyTable(name) {
+  const entry = liveKeyTableMap[name];
+  if (entry && entry.element && entry.element.parentNode) {
+    entry.element.parentNode.removeChild(entry.element);
+  }
+  delete liveKeyTableMap[name];
+}
+
+async function cancelKey(name, key_index, btn) {
+  if (!name) return;
+  // 给按钮立刻加上 stopping 样式 + 禁用，让用户看到反馈
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('btn-stopping');
+    btn.textContent = '⏹ 停止中...';
+  }
+  try {
+    const resp = await fetch(`${API}/api/cancel-key`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, key_index })
+    });
+    if (!resp.ok) {
+      // 不存在或已完成：恢复按钮状态让用户看到 "已完成"
+      if (btn) {
+        btn.classList.remove('btn-stopping');
+        btn.disabled = true;
+        btn.textContent = '已完成';
+      }
+      const data = await resp.json().catch(() => ({}));
+      showToast(`⚠️ 停止失败: ${data.error || '无对应运行中的任务'}`, 'error');
+      return;
+    }
+    // 成功：按钮保持 disabled 状态直到收到 key_done 的 cancelled 事件再更新
+    if (btn) btn.textContent = '⏹ 停止中...';
+  } catch (e) {
+    showToast(`❌ 停止请求失败: ${e.message}`, 'error');
+    if (btn) {
+      btn.classList.remove('btn-stopping');
+      btn.disabled = false;
+      btn.textContent = '⏹ 停止';
+    }
+  }
+}
+
 async function validateSingle(name) {
   busySet.add(name); renderAll();
   const stream = document.getElementById('chkStream').checked;
+  // 关键：renderAll() 已重建 detail-card 结构；我们的实时表格需要在 renderAll 之后立刻重建。
+  // 但 start 事件还没到——这里先不做任何事，等待 SSE start。
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
@@ -901,17 +1152,68 @@ async function validateSingle(name) {
       ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60 }
       : { name, stream };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    const data = await resp.json();
-    if (data.logs) data.logs.forEach(l => addLogEntry(l));
-    validateResults[name] = { status: data.status, model: data.model, content: data.content, usage: data.usage, error: data.error, stream: data.stream, elapsed: data.elapsed, multi_results: data.multi_results };
-    // 超时翻倍：后端返回新 timeout 时更新本地
-    if (data.timeout && p) {
-      p.timeout = data.timeout;
-      showToast(`⏱ 「${name}」超时，下次超时调整为 ${data.timeout}s`, 'error', 5000);
+
+    // SSE 流式读取：每个 key 验证完立刻显示
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let multiResults = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const lines = raw.split('\n');
+        let dataLine = '';
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+          else if (line.startsWith('data: ')) dataLine += line.slice(6);
+        }
+        if (!dataLine) continue;
+        try {
+          const data = JSON.parse(dataLine);
+          if (eventType === 'start') {
+            // 收到 key 列表：渲染骨架表格
+            const keyList = (data.keys || []).map(k => ({ key_index: k.key_index, key_preview: k.key_preview }));
+            renderLiveKeyTableSkeleton(name, keyList);
+          } else if (eventType === 'key_done') {
+            // 单个 key 验证完（含 cancelled），更新对应行 + 推日志
+            if (data.log) addLogEntry(data.log);
+            multiResults.push(data);
+            updateLiveKeyRow(name, data);
+          } else if (eventType === 'done') {
+            // 全部完成：移除实时表格，刷新 provider 状态（固化最终表格）
+            clearLiveKeyTable(name);
+            // 优先使用后端汇总的 multi_results，避免前端漏掉 cancelled 行
+            const finalMulti = data.multi_results || (multiResults.length > 1 ? multiResults : null);
+            const firstResult = (finalMulti && finalMulti[0]) || multiResults[0];
+            validateResults[name] = {
+              status: data.status, model: firstResult?.model,
+              content: firstResult?.content, usage: firstResult?.usage,
+              error: firstResult?.error, stream: firstResult?.stream,
+              elapsed: firstResult?.elapsed,
+              multi_results: finalMulti,
+            };
+            renderAll();
+          } else if (eventType === 'error') {
+            clearLiveKeyTable(name);
+            showToast(`❌ 「${name}」验证失败: ${data.error || '未知错误'}`, 'error');
+          }
+        } catch(e) { /* 忽略解析错误 */ }
+      }
     }
-    renderAll();
-  } catch(e) { showToast('❌ 验证失败: ' + e.message, 'error'); }
-  busySet.delete(name); renderAll();
+  } catch(e) {
+    clearLiveKeyTable(name);
+    showToast('❌ 验证失败: ' + e.message, 'error');
+  }
+  busySet.delete(name);
+  clearLiveKeyTable(name); // 防御性兜底：确保实时表格被清理
+  renderAll();
 }
 
 async function validateAll() {

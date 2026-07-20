@@ -18,6 +18,17 @@ CONFIG_PATH = Path(__file__).parent / "config.yml"
 LOGS_DIR = Path(__file__).parent / "logs"
 MAX_LOG_FILES_PER_PROVIDER = 3
 
+# ─── 单 key 取消机制 ──────────────────────────────────────
+# 全局 dict: (name, key_index) -> asyncio.Task
+# for validate_and_push 任务，让前端可通过 /api/cancel-key 取消某个 key 的验证
+_running_tasks = {}
+
+
+def _key_preview(ak):
+    """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
+    return ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+
+
 
 def safe_filename(name):
     """将 provider 名称转为安全的文件名"""
@@ -766,50 +777,122 @@ async def handle_validate(request):
     if not keys:
         return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
 
-    async def validate_one_key(key_idx, ak):
-        """验证单个 key，返回 (result, log)"""
-        if ptype == "openai":
-            result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
-        elif ptype == "anthropic":
-            result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout)
-        else:
-            return None, None
-        log = result.get("log", {})
-        log["key_index"] = key_idx
-        log["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
-        result["key_index"] = key_idx
-        result["key_preview"] = ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
-        return result, log
+    # 用 SSE 流式响应：每个 key 验证完立刻 push 一条事件，前端实时显示
+    resp = web.StreamResponse(status=200, headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+    })
+    await resp.prepare(request)
 
-    all_results = []
+    # 立刻推送 start 事件：列出所有待测 key 的脱敏预览，前端收到即可渲染骨架表格
+    start_payload = {
+        "name": name,
+        "keys": [{"key_index": i, "key_preview": _key_preview(ak)} for i, ak in enumerate(keys)],
+    }
+    await resp.write(f"event: start\ndata: {json.dumps(start_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+
+    async def validate_and_push(key_idx, ak):
+        """验证单个 key，完成后立即通过 SSE 推送结果
+
+        被外部 cancel() 取消时，捕获 CancelledError，推送一条 cancelled 状态的
+        key_done 事件，让前端把对应行更新为「已停止」。同时把 cancelled 结果登记
+        到 cancelled_results，供 done 事件的 multi_results 引用。
+        """
+        try:
+            if ptype == "openai":
+                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+            elif ptype == "anthropic":
+                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+            else:
+                return None, None, None
+            log = result.get("log", {})
+            log["key_index"] = key_idx
+            log["key_preview"] = _key_preview(ak)
+            result["key_index"] = key_idx
+            result["key_preview"] = _key_preview(ak)
+            write_provider_log(name, log)
+            # 立刻推给前端
+            await resp.write(f"event: key_done\ndata: {json.dumps(result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            return result, log, None
+        except asyncio.CancelledError:
+            # 被前端通过 /api/cancel-key 主动取消：推送 cancelled 状态
+            cancelled = {
+                "ok": False, "status": "cancelled", "model": model,
+                "key_index": key_idx, "key_preview": _key_preview(ak),
+                "elapsed": None, "error": None,
+            }
+            try:
+                await resp.write(f"event: key_done\ndata: {json.dumps(cancelled, ensure_ascii=False)}\n\n".encode("utf-8"))
+            except Exception:
+                pass
+            # 不重新抛出：把 cancelled 结果作为正常返回值，让 gather 正常收集
+            return None, None, cancelled
+        except Exception as e:
+            err_result = {"ok": False, "status": "error", "model": model, "error": str(e),
+                          "key_index": key_idx, "key_preview": _key_preview(ak)}
+            await resp.write(f"event: key_done\ndata: {json.dumps(err_result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            return err_result, None, None
+
+    all_results = []   # 完成的验证结果（含 cancelled）按 key_index 顺序排列
     logs = []
     async with aiohttp.ClientSession() as session:
         if ptype not in ("openai", "anthropic"):
-            return web.json_response({"ok": False, "error": f"不支持的类型: {ptype}", "logs": []})
-        # 并发验证所有 key
-        tasks = [validate_one_key(i, ak) for i, ak in enumerate(keys)]
-        done = await asyncio.gather(*tasks)
-        for result, log in done:
+            await resp.write(f"event: error\ndata: {json.dumps({'error': f'不支持的类型: {ptype}'}, ensure_ascii=False)}\n\n".encode("utf-8"))
+            await resp.write_eof()
+            return resp
+        # 把每个 key 的验证封装成 asyncio.Task，登记到全局 _running_tasks，
+        # 让 /api/cancel-key 可以按 (name, key_index) 取消单个任务
+        tasks = []
+        for i, ak in enumerate(keys):
+            task = asyncio.create_task(validate_and_push(i, ak))
+            _running_tasks[(name, i)] = task
+            tasks.append(task)
+        # return_exceptions=True：即使某个 task 内部异常不被自身 try/except 兜住，
+        # 也不会让整个 gather 抛错；当前实现里 validate_and_push 已吃掉所有异常，
+        # 正常路径只会返回 (result, log, cancelled)
+        done = await asyncio.gather(*tasks, return_exceptions=True)
+        # 清理全局 task 表
+        for i, _task in enumerate(tasks):
+            _running_tasks.pop((name, i), None)
+        # 按原 key_index 顺序汇总结果
+        for item in done:
+            if isinstance(item, BaseException):
+                # 防御性：不应走到这里
+                continue
+            result, log, cancelled = item
+            if cancelled is not None:
+                all_results.append(cancelled)
+                continue
             if result is None:
                 continue
             all_results.append(result)
-            logs.append(log)
-            write_provider_log(name, log)
+            if log:
+                logs.append(log)
+        # 按 key_index 排序，保证最终 multi_results 顺序与 key 顺序一致
+        all_results.sort(key=lambda r: r.get("key_index", 0))
 
     # 持久化 last_status（timeout 已由前端设置，不再自动翻倍）
     # 汇总结果：所有 key 都 available → available，否则取最差状态
     statuses = [r.get("status", "error") for r in all_results]
-    if all(s == "available" for s in statuses):
+    if not statuses:
+        overall_status = "error"
+    elif all(s == "available" for s in statuses):
         overall_status = "available"
+    elif any(s == "cancelled" for s in statuses) and not any(s == "available" for s in statuses) and not any(s in ("auth_error", "rate_limited", "timeout", "error") for s in statuses):
+        # 只有 cancelled 一种状态 → cancelled
+        overall_status = "cancelled"
     elif any(s == "auth_error" for s in statuses):
         overall_status = "mixed" if any(s == "available" for s in statuses) else "auth_error"
     else:
         overall_status = statuses[0] if statuses else "error"
 
-    # 返回第一个 result 的字段作为主响应，附加 multi_results
-    first = all_results[0]
     # 持久化 last_status 到 config（含 multi_results）
-    if provider:
+    # cancelled 也算一个有效 result 入 multi_results，与前端表格结构一致
+    if provider and all_results:
+        # 优先取第一个非 cancelled 结果作为展示主体
+        first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
         provider["last_status"] = {
             "status": overall_status,
             "model": first.get("model", model),
@@ -821,12 +904,37 @@ async def handle_validate(request):
         }
         save_config(cfg)
 
-    return web.json_response({
-        **first,
+    # 推送最终汇总事件
+    summary = {
         "status": overall_status,
         "multi_results": all_results if len(keys) > 1 else None,
         "logs": logs,
-    })
+        "total": len(all_results),
+    }
+    await resp.write(f"event: done\ndata: {json.dumps(summary, ensure_ascii=False)}\n\n".encode("utf-8"))
+    await resp.write_eof()
+    return resp
+
+
+async def handle_cancel_key(request):
+    """取消某个 provider 验证流程中指定 key_index 的验证 task
+
+    body: {"name": "...", "key_index": N}
+    成功取消（task 存在且未完成）返回 {"ok": true}，否则返回 404 / 200 不存在
+    """
+    body = await request.json()
+    name = body.get("name")
+    try:
+        key_index = int(body.get("key_index"))
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "key_index 必须是整数"}, status=400)
+    if not name:
+        return web.json_response({"ok": False, "error": "缺少 name"}, status=400)
+    task = _running_tasks.get((name, key_index))
+    if task is None or task.done():
+        return web.json_response({"ok": False, "error": "无对应运行中的任务"}, status=404)
+    task.cancel()
+    return web.json_response({"ok": True, "name": name, "key_index": key_index})
 
 
 async def handle_validate_all(request):
@@ -995,6 +1103,7 @@ app.router.add_post("/api/fetch-models", handle_fetch_models)
 app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
+app.router.add_post("/api/cancel-key", handle_cancel_key)
 app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)
