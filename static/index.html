@@ -982,10 +982,10 @@ function renderLiveKeyTableHTML(name) {
     const result = results[k.key_index];
     const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
     if (!result) {
-      // 骨架行（只有测试中才看到）
-      return `<tr id="${rowId}">
+      // 骨架行（只有测试中才看到）— 状态文本由 lk-pending-ticker 每秒更新秒数
+      return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
-        <td class="lk-status pending">⏳ 测试中...</td>
+        <td class="lk-status pending" data-started-at="${entry.startedAt || Date.now()}">⏳ 测试中... 0s</td>
         <td class="lk-elapsed">-</td>
         <td class="lk-detail"></td>
         <td><button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button></td>
@@ -1024,12 +1024,37 @@ function renderLiveKeyTableHTML(name) {
 // 开测时调用：登记 key 列表（覆盖旧的已结束结果），并触发 renderDetail 重新绘制
 // 同一个表格原地更新：标题变回「测试中实时状态」，所有行重置为骨架
 function renderLiveKeyTableSkeleton(name, keys) {
-  liveKeyTableMap[name] = { keys, results: {} };
+  liveKeyTableMap[name] = { keys, results: {}, startedAt: Date.now() };
   // 清空上一轮固化的 multi_results，避免 renderLiveKeyTableHTML 再叠加渲染
   if (validateResults[name]) validateResults[name].multi_results = null;
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
     renderDetail();
   }
+  // 启动秒钟 ticker（仅当尚未启动）
+  startPendingTicker();
+}
+
+// 全局秒钟 ticker: 每秒更新所有 .lk-status.pending[data-started-at] 的文本显示秒数
+// 当没有 pending 行时自动停止以节省 CPU
+let pendingTickerId = null;
+function startPendingTicker() {
+  if (pendingTickerId) return; // 已在运行
+  pendingTickerId = setInterval(() => {
+    const pendings = document.querySelectorAll('.lk-status.pending[data-started-at]');
+    if (pendings.length === 0) {
+      // 没有正在进行的骨架行，停掉 ticker
+      clearInterval(pendingTickerId);
+      pendingTickerId = null;
+      return;
+    }
+    const now = Date.now();
+    pendings.forEach(td => {
+      const startedAt = parseInt(td.getAttribute('data-started-at'), 10);
+      if (!startedAt) return;
+      const sec = Math.floor((now - startedAt) / 1000);
+      td.textContent = `⏳ 测试中... ${sec}s`;
+    });
+  }, 1000);
 }
 
 // 单个 key 完成（含 cancelled）时调用：登记结果并刷新对应行
