@@ -515,6 +515,9 @@ function renderDetail() {
     </div>`;
   }
 
+  // 测试中实时表格：若当前 provider 有 live 状态则渲染在 resultArea 之后
+  const liveArea = renderLiveKeyTableHTML(p.name);
+
   el.innerHTML = `<div class="detail-card">
     <div class="detail-header">
       <span class="dot ${r ? r.status : (p.selected_model ? 'idle' : 'no_model')}" style="width:8px;height:8px"></span>
@@ -566,6 +569,7 @@ function renderDetail() {
       </div>
       ${modelArea}
       ${resultArea}
+      ${liveArea}
     </div>
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
@@ -948,7 +952,7 @@ function onModelInput(name, value) {
 }
 
 // ─── 验证 ─────────────────
-// 测试中实时 Key 表格渲染状态：{ [name]: { element, keys: [{key_index, key_preview}], doneCount, cancelledCount } }
+// 测试中实时 Key 表格渲染状态：{ [name]: { keys: [...], results: {key_index: result} } }
 let liveKeyTableMap = {};
 
 // 状态符号与文案映射（与最终固化表格保持一致的语义）
@@ -962,27 +966,6 @@ const KEY_STATUS_SYMBOL = {
   not_supported: '❌ 模型不支持',
 };
 
-function ensureLiveKeyTableWrap(name) {
-  // 找到当前详情卡片的 detail-actions，在其后插入一个 wrap div
-  // 如果已存在则直接复用
-  const wrapId = `live-key-table-${cssEscape(name)}`;
-  let wrap = document.getElementById(wrapId);
-  if (wrap) return wrap;
-  const el = document.getElementById('detailContent');
-  const detailActions = el.querySelector('.detail-actions');
-  // 确保插入到 detail-actions 之后、卡片容器之外（作为 detailContent 的子元素）
-  wrap = document.createElement('div');
-  wrap.id = wrapId;
-  wrap.className = 'live-key-table-wrap';
-  if (detailActions && detailActions.parentNode === el) {
-    el.insertBefore(wrap, detailActions.nextSibling);
-  } else {
-    // 退化：直接附加到 detailContent 末尾
-    el.appendChild(wrap);
-  }
-  return wrap;
-}
-
 function cssEscape(s) {
   // 仅用于构造 id，避免特殊字符破坏选择器；这里用encodeURIComponent 后去掉不安全字符
   return encodeURIComponent(String(s || '')).replace(/[!'()*]/g, function (c) {
@@ -990,118 +973,86 @@ function cssEscape(s) {
   });
 }
 
-function renderLiveKeyTableSkeleton(name, keys) {
-  const wrap = ensureLiveKeyTableWrap(name);
+// 生成当前 provider 的实时表格 HTML，供 renderDetail 调用。
+// 没有 live 状态时返回空串。本函数只读不写，纯函数风格。
+function renderLiveKeyTableHTML(name) {
+  const entry = liveKeyTableMap[name];
+  if (!entry) return '';
   const escName = esc(name);
-  // 标题：显示 spinner + 「测试中...」
-  const rows = keys.map(k => {
+  const total = entry.keys.length;
+  const doneCnt = Object.keys(entry.results).length;
+  const remaining = Math.max(0, total - doneCnt);
+  const spinnerHTML = remaining > 0 ? '<span class="lk-spinner"></span> ' : '';
+  const rows = entry.keys.map(k => {
+    const result = entry.results[k.key_index];
     const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
+    if (!result) {
+      // 骨架行
+      return `<tr id="${rowId}">
+        <td class="lk-key">${esc(k.key_preview || '')}</td>
+        <td class="lk-status pending">⏳ 测试中...</td>
+        <td class="lk-elapsed">-</td>
+        <td class="lk-detail"></td>
+        <td><button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button></td>
+      </tr>`;
+    }
+    const statusVal = result.status || 'error';
+    const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
+    const elapsedStr = (result.elapsed != null) ? result.elapsed.toFixed(2) + 's' : '-';
+    let detailStr = '';
+    if (result.error) detailStr = `<span class="lk-err">${esc(result.error.slice(0, 60))}</span>`;
+    else if (result.content) detailStr = esc(String(result.content).slice(0, 60));
+    const btnText = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
     return `<tr id="${rowId}">
       <td class="lk-key">${esc(k.key_preview || '')}</td>
-      <td class="lk-status pending">⏳ 测试中...</td>
-      <td class="lk-elapsed">-</td>
-      <td class="lk-detail"></td>
-      <td>
-        <button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button>
-      </td>
+      <td class="lk-status ${statusVal}">${statusLabel}</td>
+      <td class="lk-elapsed">${elapsedStr}</td>
+      <td class="lk-detail">${detailStr}</td>
+      <td><button class="lk-stop" disabled>${btnText}</button></td>
     </tr>`;
   }).join('');
-  wrap.innerHTML = `
+  return `<div class="live-key-table-wrap" id="live-key-table-${cssEscape(name)}">
     <div class="lk-title">
-      <span class="lk-spinner"></span>
-      测试中实时状态 (${keys.length} 个 Key)
+      ${spinnerHTML}测试中实时状态 (${total} 个 Key · ${doneCnt}/${total} 完成)
     </div>
     <table>
       <thead>
         <tr>
-          <th>Key</th>
-          <th>状态</th>
-          <th>耗时</th>
-          <th>详情</th>
-          <th>操作</th>
+          <th>Key</th><th>状态</th><th>耗时</th><th>详情</th><th>操作</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
-  `;
-  liveKeyTableMap[name] = { element: wrap, keys, doneCount: 0, cancelledCount: 0, total: keys.length };
-  // 更新标题："测试中实时状态 (N 个 Key)" — 上方已包含
+  </div>`;
 }
 
+// 开测时调用：登记 key 列表，并触发 renderDetail 重新绘制（让表格出现在正确位置）
+function renderLiveKeyTableSkeleton(name, keys) {
+  liveKeyTableMap[name] = { keys, results: {} };
+  // 若当前选中的就是这个 provider，刷新 detail 让表格出现
+  if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
+    renderDetail();
+  }
+}
+
+// 单个 key 完成（含 cancelled）时调用：登记结果并刷新对应行
 function updateLiveKeyRow(name, result) {
-  const rowId = `keyrow-${cssEscape(name)}-${result.key_index}`;
-  const row = document.getElementById(rowId);
-  if (!row) return;
-  const statusVal = result.status || 'error';
-  const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
-  const statusCell = row.querySelector('.lk-status');
-  if (statusCell) {
-    statusCell.className = `lk-status ${statusVal}`;
-    statusCell.textContent = statusLabel;
-    // 对于 error 状态，附带 error 文本
-    if (statusVal === 'error' && result.error) {
-      const errSpan = document.createElement('span');
-      errSpan.style.fontSize = '11px';
-      errSpan.style.color = 'var(--text2)';
-      errSpan.style.marginLeft = '4px';
-      errSpan.textContent = '— ' + result.error.slice(0, 40);
-      statusCell.appendChild(errSpan);
-    } else if (statusVal === 'cancelled') {
-      // 已停止的话，文字本身就够了
-    }
-  }
-  const elapsedCell = row.querySelector('.lk-elapsed');
-  if (elapsedCell) {
-    if (result.elapsed != null) {
-      elapsedCell.textContent = result.elapsed.toFixed(2) + 's';
-    } else if (statusVal === 'cancelled') {
-      elapsedCell.textContent = '-';
-    } else {
-      elapsedCell.textContent = '-';
-    }
-  }
-  const detailCell = row.querySelector('.lk-detail');
-  if (detailCell) {
-    if (result.error) {
-      detailCell.innerHTML = `<span class="lk-err">${esc(result.error.slice(0, 60))}</span>`;
-    } else if (result.content) {
-      detailCell.textContent = String(result.content).slice(0, 60);
-    } else {
-      detailCell.textContent = '';
-    }
-  }
-  // 把「停止」按钮禁用并改成完成状态
-  const stopBtn = row.querySelector('.lk-stop');
-  if (stopBtn) {
-    stopBtn.disabled = true;
-    stopBtn.textContent = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
-    stopBtn.classList.remove('btn-stopping');
-  }
-  // 更新计数
-  if (liveKeyTableMap[name]) {
-    liveKeyTableMap[name].doneCount += 1;
-    if (statusVal === 'cancelled') {
-      liveKeyTableMap[name].cancelledCount++;
-    }
-    // 更新标题（progress）
-    const titleEl = liveKeyTableMap[name].element.querySelector('.lk-title');
-    if (titleEl) {
-      const total = liveKeyTableMap[name].total;
-      const doneCnt = liveKeyTableMap[name].doneCount;
-      const remaining = Math.max(0, total - doneCnt);
-      // 没剩余就隐藏 spinner（done 事件会移除整个块）
-      const spinnerHTML = remaining > 0 ? '<span class="lk-spinner"></span> ' : '';
-      titleEl.innerHTML = `${spinnerHTML}测试中实时状态 (${total} 个 Key · ${doneCnt}/${total} 完成)`;
-    }
+  const entry = liveKeyTableMap[name];
+  if (!entry) return;
+  if (!result || result.key_index == null) return;
+  entry.results[result.key_index] = result;
+  // 用 renderDetail 重画一遍表格（保持简单，避免手动更新 DOM cell 时漏掉头标题进度）
+  if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
+    renderDetail();
   }
 }
 
+// 测试结束/出错时清理 live 状态
 function clearLiveKeyTable(name) {
-  const entry = liveKeyTableMap[name];
-  if (entry && entry.element && entry.element.parentNode) {
-    entry.element.parentNode.removeChild(entry.element);
-  }
   delete liveKeyTableMap[name];
+  if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
+    renderDetail();
+  }
 }
 
 async function cancelKey(name, key_index, btn) {
