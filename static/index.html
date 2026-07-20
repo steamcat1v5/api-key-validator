@@ -474,30 +474,9 @@ function renderDetail() {
     const statusLabel = {available:'✅ 可用',rate_limited:'⚠️ 限速',auth_error:'❌ 鉴权失败',not_supported:'❌ 模型不支持',timeout:'⏱ 超时',error:'⚠️ 错误',no_model:'⚠️ 未选模型',mixed:'🔄 混合'}[r.status]||r.status;
     const statusColor = r.status === 'available' ? 'var(--green)' : (r.status === 'rate_limited' || r.status === 'mixed' ? 'var(--orange)' : 'var(--red)');
     
-    // 多 key 结果表格
+    // 多 key 结果表格 — 已迁移到 renderLiveKeyTableHTML 统一管理（测试中和测试后共用一张表）
+    // 这里不再独立渲染 multiArea，避免重复
     let multiArea = '';
-    if (r.multi_results && r.multi_results.length > 1) {
-      const rows = r.multi_results.map(m => {
-        const mLabel = {available:'✅',rate_limited:'⚠️',auth_error:'❌',not_supported:'❌',timeout:'⏱',error:'⚠️'}[m.status]||m.status;
-        const mColor = m.status === 'available' ? 'var(--green)' : (m.status === 'rate_limited' ? 'var(--orange)' : 'var(--red)');
-        return `<tr>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text2)">${esc(m.key_preview||'')}</td>
-          <td style="color:${mColor};font-weight:600">${mLabel}</td>
-          <td style="font-size:12px">${m.elapsed != null ? m.elapsed.toFixed(2)+'s' : '-'}</td>
-          <td style="font-size:11px;color:var(--text2)">${m.error ? esc(m.error.slice(0,40)) : esc((m.content||'').slice(0,40))}</td>
-        </tr>`;
-      }).join('');
-      multiArea = `<div class="vr-label" style="margin-top:8px">多 Key 验证结果 (${r.multi_results.length} 个)</div>
-        <table class="multi-key-table" style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead><tr style="text-align:left;color:var(--text2);border-bottom:1px solid var(--border)">
-            <th style="padding:4px 6px">Key</th>
-            <th style="padding:4px 6px">状态</th>
-            <th style="padding:4px 6px">耗时</th>
-            <th style="padding:4px 6px">详情</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-    }
     
     resultArea = `<div class="validate-result">
       <div class="vr-row">
@@ -973,21 +952,37 @@ function cssEscape(s) {
   });
 }
 
-// 生成当前 provider 的实时表格 HTML，供 renderDetail 调用。
-// 没有 live 状态时返回空串。本函数只读不写，纯函数风格。
+// 生成当前 provider 的多 key 表格 HTML，供 renderDetail 调用。
+// 同一个表格在测试中和测试结束后都使用，避免「重新开表格」的视觉跳变。
+// - 数据优先级: liveKeyTableMap[name].results（测试中，含正在进行的）→ validateResults[name].multi_results（固化结果）
+// - 测试中: 显示 spinner + 「停止」按钮
+// - 已完成: 标题改为「多 Key 验证结果」，操作列填「已完成/已停止」(disabled)
 function renderLiveKeyTableHTML(name) {
   const entry = liveKeyTableMap[name];
-  if (!entry) return '';
+  const multi = validateResults[name]?.multi_results;
+  // 没有任何多 key 数据 → 不渲染
+  if (!entry && (!multi || multi.length <= 1)) return '';
+
+  // 测试中用 entry.keys 顺序（含未完成骨架），已结束用 multi 的固化结果
+  const isPlaying = !!entry;
+  const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
+  const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
+  const total = keys.length;
   const escName = esc(name);
-  const total = entry.keys.length;
-  const doneCnt = Object.keys(entry.results).length;
+  if (total <= 1) return ''; // 单 key 不显示表格
+
+  const doneCnt = Object.keys(results).length;
   const remaining = Math.max(0, total - doneCnt);
-  const spinnerHTML = remaining > 0 ? '<span class="lk-spinner"></span> ' : '';
-  const rows = entry.keys.map(k => {
-    const result = entry.results[k.key_index];
+  const spinnerHTML = (isPlaying && remaining > 0) ? '<span class="lk-spinner"></span> ' : '';
+  const titleText = isPlaying
+    ? `测试中实时状态 (${total} 个 Key · ${doneCnt}/${total} 完成)`
+    : `多 Key 验证结果 (${total} 个)`;
+
+  const rows = keys.map(k => {
+    const result = results[k.key_index];
     const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
     if (!result) {
-      // 骨架行
+      // 骨架行（只有测试中才看到）
       return `<tr id="${rowId}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
         <td class="lk-status pending">⏳ 测试中...</td>
@@ -1013,7 +1008,7 @@ function renderLiveKeyTableHTML(name) {
   }).join('');
   return `<div class="live-key-table-wrap" id="live-key-table-${cssEscape(name)}">
     <div class="lk-title">
-      ${spinnerHTML}测试中实时状态 (${total} 个 Key · ${doneCnt}/${total} 完成)
+      ${spinnerHTML}${titleText}
     </div>
     <table>
       <thead>
@@ -1026,10 +1021,12 @@ function renderLiveKeyTableHTML(name) {
   </div>`;
 }
 
-// 开测时调用：登记 key 列表，并触发 renderDetail 重新绘制（让表格出现在正确位置）
+// 开测时调用：登记 key 列表（覆盖旧的已结束结果），并触发 renderDetail 重新绘制
+// 同一个表格原地更新：标题变回「测试中实时状态」，所有行重置为骨架
 function renderLiveKeyTableSkeleton(name, keys) {
   liveKeyTableMap[name] = { keys, results: {} };
-  // 若当前选中的就是这个 provider，刷新 detail 让表格出现
+  // 清空上一轮固化的 multi_results，避免 renderLiveKeyTableHTML 再叠加渲染
+  if (validateResults[name]) validateResults[name].multi_results = null;
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
     renderDetail();
   }
@@ -1041,13 +1038,12 @@ function updateLiveKeyRow(name, result) {
   if (!entry) return;
   if (!result || result.key_index == null) return;
   entry.results[result.key_index] = result;
-  // 用 renderDetail 重画一遍表格（保持简单，避免手动更新 DOM cell 时漏掉头标题进度）
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
     renderDetail();
   }
 }
 
-// 测试结束/出错时清理 live 状态
+// 测试结束/出错时清理 live 状态（不再删 validateResults.multi_results，因为已结束的表格要保留）
 function clearLiveKeyTable(name) {
   delete liveKeyTableMap[name];
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
