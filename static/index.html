@@ -557,7 +557,13 @@ function renderDetail() {
     </div>
   </div>`;
   // DOM 已插入后立刻 tick 一次，避免切走再切回时短暂停留在「0s」错值
-  if (liveArea && typeof tickPendingRows === 'function') tickPendingRows();
+  if (liveArea && typeof tickPendingRows === 'function') {
+    tickPendingRows();
+    // 如果切走期间 ticker 被自动停了，切回发现有 pending 就重启 ticker 持续计时
+    if (!pendingTickerId && document.querySelector('.lk-status.pending[data-started-at]')) {
+      startPendingTicker();
+    }
+  }
 }
 
 function esc(s) { return (s||'').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>'); }
