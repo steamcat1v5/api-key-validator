@@ -88,6 +88,13 @@ header h1 { font-size: 18px; font-weight: 600; flex: 1; }
 }
 .provider-item:hover .btn-del-item { opacity: 0.7; }
 .provider-item .btn-del-item:hover { opacity: 1; color: var(--red); background: rgba(255,80,80,0.15); }
+.provider-item .btn-clone-item {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  font-size: 13px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  opacity: 0; transition: all 0.15s; line-height: 1;
+}
+.provider-item:hover .btn-clone-item { opacity: 0.7; }
+.provider-item .btn-clone-item:hover { opacity: 1; color: var(--accent); background: rgba(100,160,255,0.15); }
 /* 拖拽排序 */
 .provider-item.dragging { opacity: 0.4; border-style: dashed; }
 .provider-item.drag-over-top { box-shadow: 0 -2px 0 0 var(--accent); }
@@ -427,6 +434,7 @@ function renderList() {
       <span class="p-name">${esc(p.name || '未命名')}</span>
       <span class="p-status">${modelInfo}</span>
       <span class="p-type">${p.type || 'openai'}</span>
+      <button class="btn-clone-item" onclick="event.stopPropagation(); cloneProvider(${i})" title="克隆此 provider（不复制 API key）">⧉</button>
       <button class="btn-del-item" onclick="event.stopPropagation(); rmProvider(${i})" title="删除">✕</button>
     </div>`;
   }).join('');
@@ -819,6 +827,42 @@ async function rmProvider(i) {
   renderAll();
 }
 
+// 克隆 provider：复制除 api_keys 外所有字段，插入到原位置之后
+// 名称后加短 uuid 后缀避免重复（同基础名连续克隆多次时也唯一）
+function cloneProvider(i) {
+  const src = providersData[i];
+  if (!src) return;
+  // 生成 6 位短 uuid（base36）—— 36^6 ≈ 21亿，足够避免重复
+  const shortId = Math.random().toString(36).slice(2, 8);
+  const clone = {
+    name: `${src.name || '未命名'}_${shortId}`,
+    type: src.type || 'openai',
+    base_url: src.base_url || '',
+    // api_keys 不复制——克隆出的 provider 默认没 key
+    api_keys: [],
+    models: Array.isArray(src.models) ? [...src.models] : [],
+    selected_model: src.selected_model || '',
+    source_url: src.source_url || '',
+    timeout: src.timeout || 60,
+    // _snapshot 留空：克隆出的 provider 自然是 dirty 状态
+  };
+  // 插入到 i 之后
+  providersData.splice(i + 1, 0, clone);
+  // 重建 dirtyMap：i 之前保留，i+1 标 dirty，i+1 及之后的索引 +1
+  const newDirty = {};
+  for (const [k, v] of Object.entries(dirtyMap)) {
+    const ki = parseInt(k);
+    if (ki <= i) newDirty[ki] = v;
+    else newDirty[ki + 1] = v;
+  }
+  newDirty[i + 1] = true; // 克隆的 provider 标 dirty
+  dirtyMap = newDirty;
+  // 选中克隆出的新 provider 方便编辑
+  selectedIdx = i + 1;
+  checkDirty(selectedIdx);
+  renderAll();
+  showToast(`📋 已克隆「${src.name || '未命名'}」→「${clone.name}」`, 'success');
+}
 function updField(i, k, v) {
   if (k === 'name' && providersData[i].name && providersData[i].name !== v) {
     if (validateResults[providersData[i].name]) {
