@@ -483,7 +483,8 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
     """Anthropic 协议: POST /v1/messages"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/messages"
-    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+    # 同 OpenAI 协议加 codex CLI UA（保持一致；有些网关对 UA 检测）
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
     payload = {"model": model, "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}
     if stream:
         payload["stream"] = True
