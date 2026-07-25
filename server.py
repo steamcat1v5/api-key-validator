@@ -454,14 +454,14 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                         "log": log,
                     }
                 elif status == 429:
-                    return {"ok": False, "status": "rate_limited", "model": model, "log": log}
+                    return {"ok": False, "status": "rate_limited", "model": model, "elapsed": elapsed, "log": log}
                 elif status == 401:
-                    return {"ok": False, "status": "auth_error", "model": model, "log": log}
+                    return {"ok": False, "status": "auth_error", "model": model, "elapsed": elapsed, "error": "HTTP 401 Unauthorized", "log": log}
                 elif status == 400:
                     err = body_json.get("error", {}).get("message", "") if isinstance(body_json, dict) else body[:100]
-                    return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "log": log}
+                    return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "elapsed": elapsed, "log": log}
                 else:
-                    return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
+                    return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "elapsed": elapsed, "log": log}
     except asyncio.TimeoutError:
         elapsed = time.time() - start
         log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s, 耗时 {elapsed:.2f}s)"}
@@ -558,14 +558,14 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
                         content = content_arr[0].get("text", "")[:80]
                     return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "elapsed": elapsed, "log": log}
                 elif status == 401:
-                    return {"ok": False, "status": "auth_error", "model": model, "log": log}
+                    return {"ok": False, "status": "auth_error", "model": model, "elapsed": elapsed, "error": "HTTP 401 Unauthorized", "log": log}
                 elif status == 429:
-                    return {"ok": False, "status": "rate_limited", "model": model, "log": log}
+                    return {"ok": False, "status": "rate_limited", "model": model, "elapsed": elapsed, "log": log}
                 elif status == 400:
                     err = body_json.get("error", {}).get("message", "") if isinstance(body_json, dict) else ""
-                    return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "log": log}
+                    return {"ok": False, "status": "not_supported", "model": model, "error": err[:100], "elapsed": elapsed, "log": log}
                 else:
-                    return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "log": log}
+                    return {"ok": False, "status": "error", "model": model, "error": f"HTTP {status}", "elapsed": elapsed, "log": log}
     except asyncio.TimeoutError:
         elapsed = time.time() - start
         log = {"provider": provider_name, "method": "POST", "url": url, "status": "0", "detail": f"{req_log}\n\n─── Response ───\n⏱ Timeout ({timeout}s, 耗时 {elapsed:.2f}s)"}
