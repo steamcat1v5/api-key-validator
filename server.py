@@ -338,7 +338,8 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
     """OpenAI 协议: GET /v1/models"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/models"
-    headers = {"Authorization": f"Bearer {api_key}"}
+    # 模拟 codex CLI 的 User-Agent 避免被部分上游 API 通过客户端检测拦截
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "codex_cli_rs/0.18.0"}
     req_log = f"─── Request ───\nGET {url}\n{fmt_headers(headers)}"
 
     try:
@@ -378,7 +379,8 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
     """OpenAI 协议: POST /v1/chat/completions"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    # 模拟 codex CLI 的 User-Agent 避免被部分上游 API 通过客户端检测拦截
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
     payload = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}
     if stream:
         payload["stream"] = True
