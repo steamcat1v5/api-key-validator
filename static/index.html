@@ -191,10 +191,9 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 
 /* ─── 测试中实时 Key 表格 ─── */
 .live-key-table-wrap {
-  margin: 10px 16px 12px;
+  margin: 10px 0 12px;
   background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 8px; border: 1px solid var(--border); overflow: hidden;
   padding: 10px 12px;
 }
 .live-key-table-wrap .lk-title {
@@ -209,21 +208,31 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 }
 .live-key-table-wrap table {
   width: 100%; border-collapse: collapse; font-size: 12px;
+  /* 给各列固定宽度 + 详情列宽，避免详情列被挤成 30+px 触发纵向换行导致行高虚高 */
+  table-layout: fixed;
 }
 .live-key-table-wrap th {
   text-align: left; color: var(--text2); font-weight: 600;
   padding: 4px 6px; border-bottom: 1px solid var(--border);
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 .live-key-table-wrap td {
-  padding: 6px 6px; border-bottom: 1px solid var(--border);
+  padding: 4px 6px; border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 .live-key-table-wrap tr:last-child td { border-bottom: none; }
+/* 列宽分配：Key 30% / 状态 14% / 耗时 12% / 详情 32% / 操作 12% */
+.live-key-table-wrap th:nth-child(1), .live-key-table-wrap td:nth-child(1) { width: 30%; }
+.live-key-table-wrap th:nth-child(2), .live-key-table-wrap td:nth-child(2) { width: 14%; }
+.live-key-table-wrap th:nth-child(3), .live-key-table-wrap td:nth-child(3) { width: 12%; }
+.live-key-table-wrap th:nth-child(4), .live-key-table-wrap td:nth-child(4) { width: 32%; }
+.live-key-table-wrap th:nth-child(5), .live-key-table-wrap td:nth-child(5) { width: 12%; }
 .live-key-table-wrap .lk-key {
   font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.live-key-table-wrap .lk-status { font-weight: 600; font-size: 12px; }
+.live-key-table-wrap .lk-status { font-weight: 600; font-size: 12px; white-space: nowrap; }
 .live-key-table-wrap .lk-status.pending { color: var(--text2); }
 .live-key-table-wrap .lk-status.available { color: var(--green); }
 .live-key-table-wrap .lk-status.cancelled { color: var(--orange); }
@@ -231,8 +240,12 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .live-key-table-wrap .lk-status.timeout { color: var(--orange); }
 .live-key-table-wrap .lk-status.auth_error { color: var(--red); }
 .live-key-table-wrap .lk-status.error { color: var(--red); }
-.live-key-table-wrap .lk-elapsed { font-size: 12px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
-.live-key-table-wrap .lk-detail { font-size: 11px; color: var(--text2); word-break: break-all; }
+.live-key-table-wrap .lk-elapsed { font-size: 12px; color: var(--text); font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+.live-key-table-wrap .lk-detail {
+  font-size: 11px; color: var(--text2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 0;  /* 配合 table-layout:fixed 让 ellipsis 在百分比列上生效 */
+}
 .live-key-table-wrap .lk-detail .lk-err { color: var(--red); }
 .live-key-table-wrap .lk-stop {
   padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;
@@ -1058,12 +1071,14 @@ function renderLiveKeyTableHTML(name) {
     } else if (result.content) {
       detailStr = esc(String(result.content).slice(0, 60));
     }
+    // title 让鼠标 hover 时显示完整内容 (因为详情列被截断了)
+    const titleAttr = result.error ? `title="${esc(result.error + (result.elapsed != null ? ' (' + elapsedStr + ')' : ''))}"` : (result.content ? `title="${esc(String(result.content))}"` : '');
     const btnText = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
     return `<tr id="${rowId}">
-      <td class="lk-key">${esc(k.key_preview || '')}</td>
+      <td class="lk-key" title="${esc(k.key_preview || '')}">${esc(k.key_preview || '')}</td>
       <td class="lk-status ${statusVal}">${statusLabel}</td>
       <td class="lk-elapsed">${elapsedStr}</td>
-      <td class="lk-detail">${detailStr}</td>
+      <td class="lk-detail" ${titleAttr}>${detailStr}</td>
       <td><button class="lk-stop" disabled>${btnText}</button></td>
     </tr>`;
   }).join('');
