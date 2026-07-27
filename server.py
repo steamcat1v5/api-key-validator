@@ -1124,6 +1124,143 @@ async def handle_static(request):
     return web.FileResponse(full_path, headers={'Content-Type': ct or 'application/octet-stream'})
 
 
+async def handle_judge_batch(request):
+    """用裁判模型批量判定多个 key 的答案对错（一次 LLM 调用搞定 N 个 key）
+
+    body: {
+        "question": "...",
+        "standard_answer": "...",
+        "answers": [{"key_index": 0, "key_preview": "nvapi-...xxx", "answer": "..."}, ...],
+        "judge": { name, base_url, api_keys, type, model, timeout }
+    }
+
+    返回:
+    {
+        "results": [{"key_index": 0, "correct": true/false, "reason": "..."}, ...],
+        "judge_raw": "裁判原始回复全文（便于调试）",
+        "elapsed": 裁判请求耗时
+    }
+
+    裁判失败的行不放入 results，前端会把它标「裁判未列出此 key」
+    """
+    body = await request.json()
+    question = body.get("question", "")
+    standard_answer = body.get("standard_answer", "")
+    answers = body.get("answers", [])
+    judge = body.get("judge", {})
+
+    if not judge or not judge.get("base_url") or not judge.get("api_keys"):
+        return web.json_response({"results": [], "reason": "裁判 provider 未配置"}, status=400)
+    if not answers:
+        return web.json_response({"results": [], "reason": "无应答可判定"})
+
+    base_url = judge["base_url"]
+    api_key = judge["api_keys"][0] if judge.get("api_keys") else ""
+    model = judge.get("model", "")
+    jtype = judge.get("type", "openai")
+    jtimeout = judge.get("timeout", 60)
+
+    # 构造裁判 prompt：把 N 条答案编号列出，让裁判一次返回 JSON 数组
+    answers_block = "\n\n".join(
+        f"---\nKey #{a['key_index']} ({a.get('key_preview', '')}):\n{a.get('answer', '')}"
+        for a in answers
+    )
+    # 列出所有 key_index 让裁判知道要判哪些
+    keys_list = ", ".join(f"#{a['key_index']}" for a in answers)
+    judge_prompt = f"""请判断以下每个 key 对同一道题的回答是否正确。
+
+题目：{question}
+
+标准答案：{standard_answer}
+
+各 key 的回答：
+{answers_block}
+
+判断规则：
+1. 语义等价即判对（如 "45" vs "40元现金加一包5元零食" vs "小明赚45店员亏45" 都算对）
+2. 数字错误判错
+3. 答非所问或空回复判错
+4. 方向一致且金额正确判对
+
+请只回复一个 JSON 数组，包含所有 key_index ({keys_list}) 的判定：
+[
+  {{"key_index": 0, "correct": true, "reason": "答对"}},
+  {{"key_index": 1, "correct": false, "reason": "数字错误，把50元当5元"}}
+]"""
+
+    timeout = aiohttp.ClientTimeout(total=jtimeout)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if jtype == "openai":
+                result = await validate_openai(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+            elif jtype == "anthropic":
+                result = await validate_anthropic(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+            else:
+                return web.json_response({"results": [], "reason": f"不支持协议: {jtype}"}, status=400)
+
+            content = result.get("content", "")
+            if not content:
+                return web.json_response({"results": [], "reason": "裁判模型无回复", "elapsed": result.get("elapsed")})
+
+            # 解析裁判回复里的 JSON 数组
+            import re
+            # 优先找最外层的 [ ... ]（裁判可能输出额外解释文本）
+            # 用宽松匹配：从第一个 [ 到最后一个 ]
+            first = content.find('[')
+            last = content.rfind(']')
+            if first >= 0 and last > first:
+                json_str = content[first:last+1]
+                try:
+                    parsed = json.loads(json_str)
+                    results = []
+                    for item in parsed:
+                        if isinstance(item, dict) and "key_index" in item:
+                            results.append({
+                                "key_index": item["key_index"],
+                                "correct": bool(item.get("correct", False)),
+                                "reason": str(item.get("reason", ""))[:200]  # 截断原因长度
+                            })
+                    if results:
+                        return web.json_response({
+                            "results": results,
+                            "judge_raw": content[:2000],
+                            "elapsed": result.get("elapsed")
+                        })
+                except json.JSONDecodeError:
+                    pass
+
+            # 启发式 fallback：尝试单条提取 correct 键
+            single_match = re.search(r'\{[^}]*"correct"[^}]*\}', content, re.DOTALL)
+            if single_match:
+                try:
+                    parsed = json.loads(single_match.group())
+                    # 如果只有 1 条答案，单条的 correct 适用于它
+                    if len(answers) == 1:
+                        return web.json_response({
+                            "results": [{
+                                "key_index": answers[0]["key_index"],
+                                "correct": bool(parsed.get("correct", False)),
+                                "reason": str(parsed.get("reason", ""))[:200]
+                            }],
+                            "judge_raw": content[:2000],
+                            "elapsed": result.get("elapsed")
+                        })
+                except json.JSONDecodeError:
+                    pass
+
+            return web.json_response({
+                "results": [],
+                "reason": f"裁判回复无法解析 JSON 数组: {content[:300]}",
+                "judge_raw": content[:2000],
+                "elapsed": result.get("elapsed")
+            })
+
+    except asyncio.TimeoutError:
+        return web.json_response({"results": [], "reason": "裁判超时"}, status=504)
+    except Exception as e:
+        return web.json_response({"results": [], "reason": f"裁判调用失败: {e}"}, status=500)
+
+
 async def handle_judge(request):
     """用裁判模型判定答案对错
 
@@ -1229,6 +1366,7 @@ app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/cancel-key", handle_cancel_key)
 app.router.add_post("/api/judge", handle_judge)
+app.router.add_post("/api/judge-batch", handle_judge_batch)
 app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)

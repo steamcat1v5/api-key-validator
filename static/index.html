@@ -1286,6 +1286,71 @@ async function cancelKey(name, key_index, btn) {
   }
 }
 
+// 智力测试：所有 key 完成后一次性批量调裁判判定（避免 N 次单 key 裁判请求）
+// 收到裁判结果后，按 key_index 把对错信息回填到 multi_results 的每条上，再 renderDetail
+async function quizBatchJudge(providerName, quiz, judge, multiResults) {
+  // 1) 收集成功应答的 key（过滤超时/请求失败/auth_error 等非 OK 行）
+  const okResults = multiResults.filter(r => r.ok && r.content);
+  if (okResults.length === 0) {
+    showToast('⚠️ 无成功的 key 应答，无需裁判', 'info');
+    return;
+  }
+  // 2) 用 key_preview（脱敏）编号提交给裁判，避免裁判看到真实 key 值
+  //    编号方式：#0 #1 #2... 对应 multi_results 的 key_index
+  const numberedAnswers = okResults.map(r => ({
+    key_index: r.key_index,
+    key_preview: r.key_preview,
+    answer: String(r.content).slice(0, 500)  // 裁判读的内容，太长也截一下
+  }));
+  // 3) 构造裁判 prompt——让裁判一次性返回 JSON 数组列出哪些 key 正确
+  const judgeResp = await fetch(`${API}/api/judge-batch`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      question: quiz.question,
+      standard_answer: quiz.answer,
+      answers: numberedAnswers,    // [{key_index, key_preview, answer}, ...]
+      judge: {
+        name: judge.name, base_url: judge.base_url,
+        api_keys: judge.api_keys, type: judge.type || 'openai',
+        model: judge.selected_model, timeout: judge.timeout || 60
+      }
+    })
+  });
+  const judgeData = await judgeResp.json();
+  // 4) 回填对错到 multi_results
+  //    judgeData.results: [{key_index, correct: bool, reason: str}, ...]
+  //    没结果的 key 保留 ⏳ 评分中 / 评分失败 状态
+  let correctCnt = 0, wrongCnt = 0;
+  if (Array.isArray(judgeData.results)) {
+    for (const jr of judgeData.results) {
+      const target = multiResults.find(r => r.key_index === jr.key_index);
+      if (target) {
+        target.quiz_correct = !!jr.correct;
+        target.quiz_reason = jr.reason || '';
+        if (jr.correct) correctCnt++; else wrongCnt++;
+      }
+    }
+    // 缺失的 key 标评分失败
+    for (const r of okResults) {
+      if (!judgeData.results.find(x => x.key_index === r.key_index)) {
+        r.quiz_correct = null;
+        r.quiz_reason = '裁判未列出此 key';
+      }
+    }
+  } else {
+    // 裁判失败：所有 OK 行标失败
+    for (const r of okResults) {
+      r.quiz_correct = null;
+      r.quiz_reason = judgeData.reason || '裁判调用失败';
+    }
+  }
+  // 5) 触发详情区重新渲染显示结果
+  if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === providerName) {
+    renderDetail();
+  }
+  showToast(`🧠 评分完成: ${correctCnt} 对 / ${wrongCnt} 错`, correctCnt > 0 ? 'success' : 'error');
+}
+
 async function validateSingle(name, quizMode = false) {
   // quizMode=true 走智力测试：prompt 换成题目内容，每个 key 回答后调 /api/judge 判定
   const quiz = quizMode ? getCurrentQuiz() : null;
@@ -1339,35 +1404,9 @@ async function validateSingle(name, quizMode = false) {
             if (data.log) addLogEntry(data.log);
             multiResults.push(data);
             updateLiveKeyRow(name, data);
-            // 智力测试模式：模型回答 ok 后调裁判判定对错
+            // 智力测试模式：先在行上标「⏳ 评分中」（所有 key 完成后统一调裁判）
             if (quizMode && data.ok && data.content) {
-              // 先在行上标记「评分中」
               updateLiveKeyRowQuizPending(name, data.key_index);
-              try {
-                const judgeResp = await fetch(`${API}/api/judge`, {
-                  method: 'POST', headers: {'Content-Type':'application/json'},
-                  body: JSON.stringify({
-                    question: quiz.question,
-                    standard_answer: quiz.answer,
-                    model_answer: data.content,
-                    judge: {
-                      name: judge.name, base_url: judge.base_url,
-                      api_keys: judge.api_keys, type: judge.type || 'openai',
-                      model: judge.selected_model, timeout: judge.timeout || 30
-                    }
-                  })
-                });
-                const judgeData = await judgeResp.json();
-                // 追加裁判结果到本行的 data 上，让后续 updateLiveKeyRow 重新渲染
-                data.quiz_correct = judgeData.correct;
-                data.quiz_reason = judgeData.reason || '';
-                data.quiz_judge_raw = judgeData.judge_raw || '';
-                updateLiveKeyRow(name, data);  // 重新渲染该行
-              } catch(e) {
-                data.quiz_correct = null;
-                data.quiz_reason = '评分失败: ' + e.message;
-                updateLiveKeyRow(name, data);
-              }
             }
           } else if (eventType === 'done') {
             // 全部完成：移除实时表格，刷新 provider 状态（固化最终表格）
@@ -1383,6 +1422,10 @@ async function validateSingle(name, quizMode = false) {
               multi_results: finalMulti,
             };
             renderAll();
+            // 智力测试模式：所有 key 完成后一次批量调裁判判定（省 N 倍 API 调用）
+            if (quizMode && finalMulti) {
+              await quizBatchJudge(name, quiz, judge, finalMulti);
+            }
           } else if (eventType === 'error') {
             clearLiveKeyTable(name);
             showToast(`❌ 「${name}」验证失败: ${data.error || '未知错误'}`, 'error');
