@@ -375,13 +375,19 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
         return {"ok": False, "error": str(e), "models": [], "log": log}
 
 
-async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60):
-    """OpenAI 协议: POST /v1/chat/completions"""
+async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi"):
+    """OpenAI 协议: POST /v1/chat/completions
+
+    prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
+    题目内容可能较长，max_tokens 自动放大到 500 让模型有足够空间回答。
+    """
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/chat/completions"
     # 模拟 codex CLI 的 User-Agent 避免被部分上游 API 通过客户端检测拦截
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
-    payload = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}
+    # 智力测试题目比 hi 长，max_tokens 给足 500 让模型有空间回答
+    max_tokens = 500 if prompt_text != "hi" else 50
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt_text}], "max_tokens": max_tokens}
     if stream:
         payload["stream"] = True
 
@@ -479,13 +485,17 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
         return {"ok": False, "status": "error", "model": model, "error": err_msg, "elapsed": elapsed, "log": log}
 
 
-async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60):
-    """Anthropic 协议: POST /v1/messages"""
+async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi"):
+    """Anthropic 协议: POST /v1/messages
+
+    prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
+    """
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/messages"
     # 同 OpenAI 协议加 codex CLI UA（保持一致；有些网关对 UA 检测）
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
-    payload = {"model": model, "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}
+    max_tokens = 500 if prompt_text != "hi" else 50
+    payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt_text}]}
     if stream:
         payload["stream"] = True
 
@@ -764,6 +774,7 @@ async def handle_validate(request):
     api_keys = body.get("api_keys", [])
     model = body.get("model", "")  # 前端可直接传模型名
     ptype = body.get("type", "openai")
+    prompt_text = body.get("prompt", "hi")  # 默认 hi；智力测试时传题目内容
 
     cfg = load_config()
     providers = cfg.get("providers", [])
@@ -819,9 +830,9 @@ async def handle_validate(request):
         """
         try:
             if ptype == "openai":
-                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text)
             elif ptype == "anthropic":
-                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout)
+                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text)
             else:
                 return None, None, None
             log = result.get("log", {})
@@ -1113,6 +1124,102 @@ async def handle_static(request):
     return web.FileResponse(full_path, headers={'Content-Type': ct or 'application/octet-stream'})
 
 
+async def handle_judge(request):
+    """用裁判模型判定答案对错
+
+    body: {
+        "question": "...题目原文...",
+        "standard_answer": "...标准答案...",
+        "model_answer": "...被测模型的回答...",
+        "judge": {
+            "name": "...", "base_url": "...", "api_keys": ["sk-..."],
+            "type": "openai", "model": "...", "timeout": 30
+        }
+    }
+
+    返回 {"correct": true/false, "reason": "..."}
+    """
+    body = await request.json()
+    question = body.get("question", "")
+    standard_answer = body.get("standard_answer", "")
+    model_answer = body.get("model_answer", "")
+    judge = body.get("judge", {})
+
+    if not judge or not judge.get("base_url") or not judge.get("api_keys"):
+        return web.json_response({"correct": False, "reason": "裁判 provider 未配置"}, status=400)
+
+    base_url = judge["base_url"]
+    api_key = judge["api_keys"][0] if judge.get("api_keys") else ""
+    model = judge.get("model", "")
+    jtype = judge.get("type", "openai")
+    jtimeout = judge.get("timeout", 30)
+
+    judge_prompt = f"""请判断以下题目模型回答是否正确。
+
+题目：{question}
+
+标准答案：{standard_answer}
+
+模型回答：{model_answer}
+
+判断规则：
+1. 语义等价即判对（如 "45" vs "40元现金加一包5元零食" vs "小明赚45店员亏45" 都算对）
+2. 数字错误判错
+3. 答非所问或空回复判错
+4. 方向一致且金额正确判对
+
+只回复 JSON：{{"correct": true/false, "reason": "一句话说明"}}"""
+
+    timeout = aiohttp.ClientTimeout(total=jtimeout)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if jtype == "openai":
+                result = await validate_openai(session, base_url, api_key, model, "judge", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+            elif jtype == "anthropic":
+                result = await validate_anthropic(session, base_url, api_key, model, "judge", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+            else:
+                return web.json_response({"correct": False, "reason": f"不支持协议: {jtype}"}, status=400)
+
+            content = result.get("content", "")
+            if not content:
+                return web.json_response({"correct": False, "reason": "裁判模型无回复", "elapsed": result.get("elapsed")})
+
+            # 尝试从裁判回复里解析 JSON
+            import re
+            json_match = re.search(r'\{[^}]*"correct"[^}]*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group())
+                    return web.json_response({
+                        "correct": bool(parsed.get("correct", False)),
+                        "reason": parsed.get("reason", ""),
+                        "judge_raw": content,
+                        "elapsed": result.get("elapsed")
+                    })
+                except json.JSONDecodeError:
+                    pass
+
+            # fallback: 启发式判定裁判回复是否包含 true/false
+            lower = content.lower()
+            if '"correct": true' in lower or '"correct":true' in lower:
+                return web.json_response({"correct": True, "reason": "裁判判定正确", "judge_raw": content, "elapsed": result.get("elapsed")})
+            if '"correct": false' or '"correct":false' in lower:
+                return web.json_response({"correct": False, "reason": "裁判判定错误", "judge_raw": content, "elapsed": result.get("elapsed")})
+
+            # 无法解析，返回原文让前端自行判断
+            return web.json_response({
+                "correct": False,
+                "reason": f"裁判回复无法解析: {content[:200]}",
+                "judge_raw": content,
+                "elapsed": result.get("elapsed")
+            })
+
+    except asyncio.TimeoutError:
+        return web.json_response({"correct": False, "reason": "裁判超时"}, status=504)
+    except Exception as e:
+        return web.json_response({"correct": False, "reason": f"裁判调用失败: {e}"}, status=500)
+
+
 app.router.add_get("/static/{tail:.*}", handle_static)
 app.router.add_get("/api/config", handle_get_config)
 app.router.add_post("/api/config", handle_save_config)
@@ -1121,6 +1228,7 @@ app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/cancel-key", handle_cancel_key)
+app.router.add_post("/api/judge", handle_judge)
 app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)

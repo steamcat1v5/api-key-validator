@@ -46,6 +46,34 @@ header h1 { font-size: 18px; font-weight: 600; flex: 1; }
 .btn-save { background: #00cec922; color: var(--green); border: 1px solid #00cec944; }
 .btn-save:hover:not(:disabled) { background: #00cec944; }
 .btn-danger { background: #e74c3c22; color: var(--red); }
+
+/* ─── 智力测试下拉菜单 ─── */
+.quiz-dropdown { position: relative; display: inline-block; }
+.quiz-dropdown .btn-quiz {
+  background: var(--surface2); color: var(--text2); border: 1px solid var(--border);
+}
+.quiz-dropdown .btn-quiz:hover { border-color: var(--accent); color: var(--text); }
+.quiz-dropdown .btn-quiz.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.quiz-dropdown .btn-quiz.active:hover { background: var(--accent2); }
+.quiz-menu {
+  display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 1000;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; min-width: 320px; box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  font-size: 12.5px;
+}
+.quiz-menu.open { display: block; }
+.quiz-menu .qm-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.quiz-menu .qm-row label { font-size: 11px; color: var(--text2); width: 40px; flex-shrink: 0; font-weight: 600; }
+.quiz-menu .qm-row select {
+  flex: 1; padding: 5px 8px; font-size: 12px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 4px; color: var(--text); outline: none;
+}
+.quiz-menu .qm-row select:focus { border-color: var(--accent); }
+.quiz-menu .qm-hint { font-size: 10.5px; color: var(--text2); margin: 4px 0 8px; line-height: 1.5; }
+.quiz-menu .qm-actions { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.quiz-menu .qm-actions button { flex: 1; padding: 5px 8px; border-radius: 4px; font-size: 11.5px; border: none; cursor: pointer; }
 .btn-danger:hover:not(:disabled) { background: #e74c3c44; }
 .btn-fetch { background: #74b9ff22; color: var(--blue); border: 1px solid #74b9ff44; }
 .btn-xs {
@@ -313,6 +341,24 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
     <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer">
       <input type="checkbox" id="chkStream" onchange="saveStreamSetting()"> stream
     </label>
+    <div class="quiz-dropdown">
+      <button class="btn btn-quiz" id="btnQuiz" onclick="toggleQuizMenu()">🧠 智力测试</button>
+      <div class="quiz-menu" id="quizMenu">
+        <div class="qm-row">
+          <label>题目</label>
+          <select id="quizSelect" onchange="saveQuizSetting()"></select>
+        </div>
+        <div class="qm-row">
+          <label>裁判</label>
+          <select id="quizJudgeSelect" onchange="saveQuizSetting()"></select>
+        </div>
+        <div class="qm-hint" id="quizHint"></div>
+        <div class="qm-actions">
+          <button style="background:var(--accent);color:#fff" onclick="applyQuizSetting()">✓ 启用</button>
+          <button style="background:var(--surface2);color:var(--text2);border:1px solid var(--border)" onclick="disableQuizSetting()">✕ 关闭</button>
+        </div>
+      </div>
+    </div>
     <button class="btn btn-secondary" onclick="clearLogs()">🗑️ 清空日志</button>
   </div>
 
@@ -356,6 +402,22 @@ let busy = false;
 let busyProvider = null; // 正在验证/获取的 provider 名称
 let busySet = new Set(); // 批量验证中尚未完成的 provider 集合
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
+
+// ─── 智力测试题库 ─────────────────
+// 标准答案 answer 用作裁判参考；裁判 LLM 会判断语义等价（如 "45" vs "40+一包5元零食"）
+const QUIZ_BANK = [
+  {
+    id: 'Q1',
+    title: '小明买零食',
+    question: '小明到店里买一包5块钱零食，给了店员50块，店员找了45给他，小明收了钱后，然后小明说：我有5块零钱，我给你5块钱，叫店员把刚才的50块给回小明，店员给了50小明。\n\n请问小明赚了多少？\n店员亏了多少？',
+    answer: '小明赚45元，店员亏45元'
+  },
+];
+
+// 智力测试状态（localStorage 持久化）
+let quizActive = false;       // 是否启用智力测试模式
+let quizSelectedId = '';      // 选中的题目 id
+let quizJudgeProvider = '';   // 裁判 provider 名称
 
 // ─── 快照 & 脏检测 ─────────────────
 const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout'];
@@ -424,6 +486,8 @@ async function init() {
   if (selectedIdx >= 0 && providersData[selectedIdx]) {
     await loadProviderLogs(providersData[selectedIdx].name);
   }
+  // 恢复智力测试设置
+  loadQuizSetting();
 }
 
 function renderAll() { renderList(); renderDetail(); }
@@ -574,6 +638,7 @@ function renderDetail() {
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
+      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}', true)" ${busySet.has(p.name) || !p.selected_model || !quizActive ? 'disabled' : ''} style="${quizActive ? 'background:var(--accent2)' : ''}">🧠 智测</button>
       <select style="width:auto;margin-left:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||60)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
@@ -1071,6 +1136,19 @@ function renderLiveKeyTableHTML(name) {
     } else if (result.content) {
       detailStr = esc(String(result.content).slice(0, 60));
     }
+    // 智力测试结果叠加在 detailStr 上
+    let quizBadge = '';
+    if (result.quiz_correct === true) {
+      quizBadge = ` <span style="color:var(--green);font-weight:600">✓ 对</span>`;
+    } else if (result.quiz_correct === false) {
+      quizBadge = ` <span style="color:var(--red);font-weight:600">✗ 错</span>`;
+      if (result.quiz_reason) quizBadge += ` <span class="lk-err" style="font-weight:normal">${esc(result.quiz_reason.slice(0, 80))}</span>`;
+    } else if (result.quiz_reason === 'pending' || result.quiz_correct === 'pending') {
+      quizBadge = ` <span style="color:var(--text2)">⏳ 评分中...</span>`;
+    } else if (result.quiz_correct == null && result.quiz_reason) {
+      quizBadge = ` <span style="color:var(--orange)">${esc(result.quiz_reason.slice(0, 60))}</span>`;
+    }
+    if (quizBadge) detailStr += quizBadge;
     // title 让鼠标 hover 时显示完整内容 (因为详情列被截断了)
     const titleAttr = result.error ? `title="${esc(result.error + (result.elapsed != null ? ' (' + elapsedStr + ')' : ''))}"` : (result.content ? `title="${esc(String(result.content))}"` : '');
     const btnText = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
@@ -1150,6 +1228,20 @@ function updateLiveKeyRow(name, result) {
   }
 }
 
+// 智力测试：key 回答完成后、裁判结果到位前，先标记「评分中」
+function updateLiveKeyRowQuizPending(name, key_index) {
+  const entry = liveKeyTableMap[name];
+  if (!entry) return;
+  const result = entry.results[key_index];
+  if (result) {
+    result.quiz_correct = 'pending';
+    result.quiz_reason = 'pending';
+  }
+  if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
+    renderDetail();
+  }
+}
+
 // 测试结束/出错时清理 live 状态（不再删 validateResults.multi_results，因为已结束的表格要保留）
 function clearLiveKeyTable(name) {
   delete liveKeyTableMap[name];
@@ -1194,7 +1286,14 @@ async function cancelKey(name, key_index, btn) {
   }
 }
 
-async function validateSingle(name) {
+async function validateSingle(name, quizMode = false) {
+  // quizMode=true 走智力测试：prompt 换成题目内容，每个 key 回答后调 /api/judge 判定
+  const quiz = quizMode ? getCurrentQuiz() : null;
+  const judge = quizMode ? getJudgeProvider() : null;
+  if (quizMode && (!quiz || !judge)) {
+    showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
+    return;
+  }
   busySet.add(name); renderAll();
   const stream = document.getElementById('chkStream').checked;
   // 关键：renderAll() 已重建 detail-card 结构；我们的实时表格需要在 renderAll 之后立刻重建。
@@ -1203,8 +1302,8 @@ async function validateSingle(name) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60 }
-      : { name, stream };
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, prompt: quiz ? quiz.question : 'hi' }
+      : { name, stream, prompt: quiz ? quiz.question : 'hi' };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
 
     // SSE 流式读取：每个 key 验证完立刻显示
@@ -1240,6 +1339,36 @@ async function validateSingle(name) {
             if (data.log) addLogEntry(data.log);
             multiResults.push(data);
             updateLiveKeyRow(name, data);
+            // 智力测试模式：模型回答 ok 后调裁判判定对错
+            if (quizMode && data.ok && data.content) {
+              // 先在行上标记「评分中」
+              updateLiveKeyRowQuizPending(name, data.key_index);
+              try {
+                const judgeResp = await fetch(`${API}/api/judge`, {
+                  method: 'POST', headers: {'Content-Type':'application/json'},
+                  body: JSON.stringify({
+                    question: quiz.question,
+                    standard_answer: quiz.answer,
+                    model_answer: data.content,
+                    judge: {
+                      name: judge.name, base_url: judge.base_url,
+                      api_keys: judge.api_keys, type: judge.type || 'openai',
+                      model: judge.selected_model, timeout: judge.timeout || 30
+                    }
+                  })
+                });
+                const judgeData = await judgeResp.json();
+                // 追加裁判结果到本行的 data 上，让后续 updateLiveKeyRow 重新渲染
+                data.quiz_correct = judgeData.correct;
+                data.quiz_reason = judgeData.reason || '';
+                data.quiz_judge_raw = judgeData.judge_raw || '';
+                updateLiveKeyRow(name, data);  // 重新渲染该行
+              } catch(e) {
+                data.quiz_correct = null;
+                data.quiz_reason = '评分失败: ' + e.message;
+                updateLiveKeyRow(name, data);
+              }
+            }
           } else if (eventType === 'done') {
             // 全部完成：移除实时表格，刷新 provider 状态（固化最终表格）
             clearLiveKeyTable(name);
@@ -1530,6 +1659,117 @@ async function saveStreamSetting() {
     await fetch(`${API}/api/stream`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ stream }) });
   } catch(e) {}
 }
+
+// ─── 智力测试 ─────────────────
+function loadQuizSetting() {
+  try {
+    quizActive = localStorage.getItem('quizActive') === 'true';
+    quizSelectedId = localStorage.getItem('quizSelectedId') || '';
+    quizJudgeProvider = localStorage.getItem('quizJudgeProvider') || '';
+  } catch(e) {}
+  updateQuizUI();
+}
+
+function toggleQuizMenu() {
+  const menu = document.getElementById('quizMenu');
+  menu.classList.toggle('open');
+  if (menu.classList.contains('open')) {
+    populateQuizSelects();
+  }
+}
+
+function populateQuizSelects() {
+  // 题目下拉
+  const qSel = document.getElementById('quizSelect');
+  qSel.innerHTML = QUIZ_BANK.map(q => `<option value="${q.id}" ${q.id===quizSelectedId?'selected':''}>${q.title}</option>`).join('');
+  // 裁判下拉——从 providersData 选
+  const jSel = document.getElementById('quizJudgeSelect');
+  const judges = providersData.filter(p => p.api_keys && p.api_keys.length > 0 && p.selected_model);
+  jSel.innerHTML = '<option value="">-- 请选择 --</option>' + judges.map(p =>
+    `<option value="${esc(p.name)}" ${p.name===quizJudgeProvider?'selected':''}>${esc(p.name)} (${esc(p.selected_model||'')})</option>`).join('');
+  // 提示
+  const hint = document.getElementById('quizHint');
+  const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
+  if (q && quizActive) {
+    hint.textContent = `当前已启用：「${q.title}」, 裁判：${quizJudgeProvider || '未选'}`;
+    hint.style.color = 'var(--green)';
+  } else if (q) {
+    hint.textContent = `已选「${q.title}」但未启用。点「✓ 启用」开始智力测试。`;
+    hint.style.color = 'var(--text2)';
+  } else {
+    hint.textContent = '选择一道题 + 一个裁判 provider，点「✓ 启用」开始。';
+    hint.style.color = 'var(--text2)';
+  }
+}
+
+function saveQuizSetting() {
+  // 用户改了下拉时记录选择（不立即启用）
+  quizSelectedId = document.getElementById('quizSelect').value;
+  quizJudgeProvider = document.getElementById('quizJudgeSelect').value;
+  try {
+    localStorage.setItem('quizSelectedId', quizSelectedId);
+    localStorage.setItem('quizJudgeProvider', quizJudgeProvider);
+  } catch(e) {}
+  populateQuizSelects(); // 更新 hint
+}
+
+function applyQuizSetting() {
+  quizSelectedId = document.getElementById('quizSelect').value;
+  quizJudgeProvider = document.getElementById('quizJudgeSelect').value;
+  if (!quizSelectedId) { showToast('⚠️ 请先选择题目', 'error'); return; }
+  if (!quizJudgeProvider) { showToast('⚠️ 请先选择裁判 provider', 'error'); return; }
+  quizActive = true;
+  try {
+    localStorage.setItem('quizActive', 'true');
+    localStorage.setItem('quizSelectedId', quizSelectedId);
+    localStorage.setItem('quizJudgeProvider', quizJudgeProvider);
+  } catch(e) {}
+  document.getElementById('quizMenu').classList.remove('open');
+  updateQuizUI();
+  renderAll();
+  showToast('🧠 智力测试已启用', 'success');
+}
+
+function disableQuizSetting() {
+  quizActive = false;
+  try { localStorage.setItem('quizActive', 'false'); } catch(e) {}
+  document.getElementById('quizMenu').classList.remove('open');
+  updateQuizUI();
+  renderAll();
+  showToast('🧠 已切回普通验证（hi）', 'info');
+}
+
+function updateQuizUI() {
+  const btn = document.getElementById('btnQuiz');
+  if (quizActive && quizSelectedId) {
+    const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
+    btn.classList.add('active');
+    btn.textContent = `🧠 智测: ${q ? q.title : '?'}`;
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = '🧠 智力测试';
+  }
+}
+
+// 获取当前选中题目对象
+function getCurrentQuiz() {
+  if (!quizActive || !quizSelectedId) return null;
+  return QUIZ_BANK.find(q => q.id === quizSelectedId) || null;
+}
+
+// 获取裁判 provider 信息
+function getJudgeProvider() {
+  if (!quizJudgeProvider) return null;
+  return providersData.find(p => p.name === quizJudgeProvider) || null;
+}
+
+// 点击外部关闭菜单
+document.addEventListener('click', (e) => {
+  const dropdown = document.querySelector('.quiz-dropdown');
+  if (dropdown && !dropdown.contains(e.target)) {
+    document.getElementById('quizMenu')?.classList.remove('open');
+  }
+});
 
 function copyKey(name) {
   const p = providersData.find(x => x.name === name);
