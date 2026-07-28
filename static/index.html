@@ -1786,6 +1786,12 @@ function confirmQuizSetting() {
   quizJudgeProvider = document.getElementById('quizJudgeSelect').value;
   if (!quizSelectedId) { showToast('⚠️ 请先选择题目', 'error'); return; }
   if (!quizJudgeProvider) { showToast('⚠️ 请先选择裁判 provider', 'error'); return; }
+  // 检查裁判 provider 有没有 API Key
+  const jp = providersData.find(p => p.name === quizJudgeProvider);
+  if (jp && (!jp.api_keys || jp.api_keys.length === 0 || !jp.api_keys[0])) {
+    showToast(`⚠️ 裁判「${quizJudgeProvider}」没有 API Key，无法评分。请先填或换一个`, 'error');
+    return;
+  }
   try {
     localStorage.setItem('quizSelectedId', quizSelectedId);
     localStorage.setItem('quizJudgeProvider', quizJudgeProvider);
