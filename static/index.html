@@ -354,8 +354,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
         </div>
         <div class="qm-hint" id="quizHint"></div>
         <div class="qm-actions">
-          <button style="background:var(--accent);color:#fff" onclick="applyQuizSetting()">✓ 启用</button>
-          <button style="background:var(--surface2);color:var(--text2);border:1px solid var(--border)" onclick="disableQuizSetting()">✕ 关闭</button>
+          <button style="background:var(--accent);color:#fff" onclick="confirmQuizSetting()">✓ 确认</button>
         </div>
       </div>
     </div>
@@ -427,7 +426,6 @@ const QUIZ_BANK = [
 ];
 
 // 智力测试状态（localStorage 持久化）
-let quizActive = false;       // 是否启用智力测试模式
 let quizSelectedId = '';      // 选中的题目 id
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
@@ -664,7 +662,7 @@ function renderDetail() {
     <div class="detail-actions">
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
-      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}', true)" ${busySet.has(p.name) || !p.selected_model || !quizActive ? 'disabled' : ''} style="${quizActive ? 'background:var(--accent2)' : ''}">🧠 智测</button>
+      <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}', true)" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''} style="${quizSelectedId ? 'background:var(--accent2)' : ''}">🧠 智测</button>
       <select style="width:auto;margin-left:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||60)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
@@ -1733,7 +1731,6 @@ async function saveStreamSetting() {
 // ─── 智力测试 ─────────────────
 function loadQuizSetting() {
   try {
-    quizActive = localStorage.getItem('quizActive') === 'true';
     quizSelectedId = localStorage.getItem('quizSelectedId') || '';
     quizJudgeProvider = localStorage.getItem('quizJudgeProvider') || '';
   } catch(e) {}
@@ -1768,14 +1765,14 @@ function populateQuizSelects() {
   // 提示
   const hint = document.getElementById('quizHint');
   const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
-  if (q && quizActive) {
-    hint.textContent = `当前已启用：「${q.title}」, 裁判：${quizJudgeProvider || '未选'}`;
+  if (q && quizJudgeProvider) {
+    hint.textContent = `当前选择：「${q.title}」, 裁判：${quizJudgeProvider}`;
     hint.style.color = 'var(--green)';
   } else if (q) {
-    hint.textContent = `已选「${q.title}」但未启用。点「✓ 启用」开始智力测试。`;
+    hint.textContent = `已选题「${q.title}」但未选裁判，请选一个裁判 provider。`;
     hint.style.color = 'var(--text2)';
   } else {
-    hint.textContent = '选择一道题 + 一个裁判 provider，点「✓ 启用」开始。';
+    hint.textContent = '选择一道题 + 一个裁判 provider，点「✓ 确认」保存。';
     hint.style.color = 'var(--text2)';
   }
 }
@@ -1791,35 +1788,25 @@ function saveQuizSetting() {
   populateQuizSelects(); // 更新 hint
 }
 
-function applyQuizSetting() {
+function confirmQuizSetting() {
   quizSelectedId = document.getElementById('quizSelect').value;
   quizJudgeProvider = document.getElementById('quizJudgeSelect').value;
   if (!quizSelectedId) { showToast('⚠️ 请先选择题目', 'error'); return; }
   if (!quizJudgeProvider) { showToast('⚠️ 请先选择裁判 provider', 'error'); return; }
-  quizActive = true;
   try {
-    localStorage.setItem('quizActive', 'true');
     localStorage.setItem('quizSelectedId', quizSelectedId);
     localStorage.setItem('quizJudgeProvider', quizJudgeProvider);
   } catch(e) {}
   document.getElementById('quizMenu').classList.remove('open');
   updateQuizUI();
   renderAll();
-  showToast('🧠 智力测试已启用', 'success');
-}
-
-function disableQuizSetting() {
-  quizActive = false;
-  try { localStorage.setItem('quizActive', 'false'); } catch(e) {}
-  document.getElementById('quizMenu').classList.remove('open');
-  updateQuizUI();
-  renderAll();
-  showToast('🧠 已切回普通验证（hi）', 'info');
+  const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
+  showToast(`🧠 已确认：「${q ? q.title : '?'}」`, 'success');
 }
 
 function updateQuizUI() {
   const btn = document.getElementById('btnQuiz');
-  if (quizActive && quizSelectedId) {
+  if (quizSelectedId) {
     const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
     btn.classList.add('active');
     btn.textContent = `🧠 智测: ${q ? q.title : '?'}`;
@@ -1831,7 +1818,7 @@ function updateQuizUI() {
 
 // 获取当前选中题目对象
 function getCurrentQuiz() {
-  if (!quizActive || !quizSelectedId) return null;
+  if (!quizSelectedId) return null;
   return QUIZ_BANK.find(q => q.id === quizSelectedId) || null;
 }
 
