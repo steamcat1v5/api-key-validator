@@ -935,7 +935,7 @@ async def handle_validate(request):
     # 推送最终汇总事件
     summary = {
         "status": overall_status,
-        "multi_results": all_results if len(keys) > 1 else None,
+        "multi_results": all_results,
         "logs": logs,
         "total": len(all_results),
     }
