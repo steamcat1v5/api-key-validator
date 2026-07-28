@@ -1752,11 +1752,19 @@ function populateQuizSelects() {
   // 题目下拉
   const qSel = document.getElementById('quizSelect');
   qSel.innerHTML = QUIZ_BANK.map(q => `<option value="${q.id}" ${q.id===quizSelectedId?'selected':''}>${q.title}</option>`).join('');
-  // 裁判下拉——从 providersData 选
+  // 裁判下拉——从 providersData 选（只要 api_keys 非空即可，不要求 selected_model）
   const jSel = document.getElementById('quizJudgeSelect');
-  const judges = providersData.filter(p => p.api_keys && p.api_keys.length > 0 && p.selected_model);
-  jSel.innerHTML = '<option value="">-- 请选择 --</option>' + judges.map(p =>
-    `<option value="${esc(p.name)}" ${p.name===quizJudgeProvider?'selected':''}>${esc(p.name)} (${esc(p.selected_model||'')})</option>`).join('');
+  const judges = providersData.filter(p => p.api_keys && p.api_keys.length > 0);
+  let opts = '<option value="">-- 请选择 --</option>' + judges.map(p =>
+    `<option value="${esc(p.name)}" ${p.name===quizJudgeProvider?'selected':''}>${esc(p.name)} (${esc(p.selected_model||'未选模型')})</option>`).join('');
+  // 保底：如果 quizJudgeProvider 不在可选列表里（provider 被删/改名/model 清空），追加一个灰色选项
+  if (quizJudgeProvider && !judges.find(p => p.name === quizJudgeProvider)) {
+    // 检查是被删了还是 model 空了——直接追加显示
+    const p = providersData.find(x => x.name === quizJudgeProvider);
+    const label = p ? `${esc(p.name)} (${esc(p.selected_model||'未选模型')})` : `${esc(quizJudgeProvider)} (已失效)`;
+    opts += `<option value="${esc(quizJudgeProvider)}" selected>${label}</option>`;
+  }
+  jSel.innerHTML = opts;
   // 提示
   const hint = document.getElementById('quizHint');
   const q = QUIZ_BANK.find(x => x.id === quizSelectedId);
