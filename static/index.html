@@ -578,10 +578,10 @@ function renderDetail() {
         <span class="dot ${r.status}" style="width:9px;height:9px"></span>
         <strong style="color:${statusColor}">${statusLabel}</strong>
         ${r.model ? `<span style="font-size:12px;color:var(--text2);margin-left:4px">${esc(r.model)}</span>` : ''}
-        ${r.error && !r.multi_results ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
+        ${r.error && (!r.multi_results || r.multi_results.length <= 1) ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
       </div>
-      ${r.content && !r.multi_results ? (() => {
-        // 单 key 智测场景：在回复内容下方显示评分结果（✓对/✗错/评分中）
+      ${r.content && (!r.multi_results || r.multi_results.length <= 1) ? (() => {
+        // 单 key 或无 key 场景：在回复内容下方显示评分结果（✓对/✗错/评分中）
         let badge = '';
         const qr = (r.multi_results && r.multi_results[0]) ? r.multi_results[0] : r;
         if (qr.quiz_correct === true) {
