@@ -1383,6 +1383,10 @@ async function validateSingle(name, quizMode = false) {
     showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
     return;
   }
+  if (quizMode && judge && (!judge.api_keys || judge.api_keys.length === 0 || !judge.api_keys[0])) {
+    showToast(`⚠️ 裁判「${judge.name}」没有 API Key，无法评分。请先填写或换个裁判`, 'error');
+    return;
+  }
   busySet.add(name); renderAll();
   const stream = document.getElementById('chkStream').checked;
   // 关键：renderAll() 已重建 detail-card 结构；我们的实时表格需要在 renderAll 之后立刻重建。
