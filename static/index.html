@@ -582,7 +582,21 @@ function renderDetail() {
         ${r.model ? `<span style="font-size:12px;color:var(--text2);margin-left:4px">${esc(r.model)}</span>` : ''}
         ${r.error && !r.multi_results ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
       </div>
-      ${r.content && !r.multi_results ? `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>` : ''}
+      ${r.content && !r.multi_results ? (() => {
+        // 单 key 智测场景：在回复内容下方显示评分结果（✓对/✗错/评分中）
+        let badge = '';
+        const qr = (r.multi_results && r.multi_results[0]) ? r.multi_results[0] : r;
+        if (qr.quiz_correct === true) {
+          badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span>` : ''}</div>`;
+        } else if (qr.quiz_correct === false) {
+          badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span>` : ''}</div>`;
+        } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
+          badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
+        } else if (qr.quiz_correct == null && qr.quiz_reason) {
+          badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span></div>`;
+        }
+        return `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>${badge}`;
+      })() : ''}
       ${multiArea}
       <div class="vr-usage">
         ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}` : ''}
@@ -1102,8 +1116,8 @@ function cssEscape(s) {
 function renderLiveKeyTableHTML(name) {
   const entry = liveKeyTableMap[name];
   const multi = validateResults[name]?.multi_results;
-  // 没有任何多 key 数据 → 不渲染
-  if (!entry && (!multi || multi.length <= 1)) return '';
+  // 没有任何多 key 数据 → 不渲染（单 key 也通过这个表格展示评分结果）
+  if (!entry && (!multi || multi.length < 1)) return '';
 
   // 测试中用 entry.keys 顺序（含未完成骨架），已结束用 multi 的固化结果
   const isPlaying = !!entry;
@@ -1111,7 +1125,7 @@ function renderLiveKeyTableHTML(name) {
   const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
   const total = keys.length;
   const escName = esc(name);
-  if (total <= 1) return ''; // 单 key 不显示表格
+  if (total < 1) return ''; // 防御
 
   const doneCnt = Object.keys(results).length;
   const remaining = Math.max(0, total - doneCnt);
@@ -1424,7 +1438,8 @@ async function validateSingle(name, quizMode = false) {
             // 全部完成：移除实时表格，刷新 provider 状态（固化最终表格）
             clearLiveKeyTable(name);
             // 优先使用后端汇总的 multi_results，避免前端漏掉 cancelled 行
-            const finalMulti = data.multi_results || (multiResults.length > 1 ? multiResults : null);
+            // 单 key 场景后端可能不返回 multi_results，用前端收集的 multiResults 兜底
+            const finalMulti = data.multi_results || (multiResults.length >= 1 ? multiResults : null);
             const firstResult = (finalMulti && finalMulti[0]) || multiResults[0];
             validateResults[name] = {
               status: data.status, model: firstResult?.model,
