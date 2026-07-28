@@ -346,11 +346,11 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
       <div class="quiz-menu" id="quizMenu">
         <div class="qm-row">
           <label>题目</label>
-          <select id="quizSelect" onchange="saveQuizSetting()"></select>
+          <select id="quizSelect"></select>
         </div>
         <div class="qm-row">
           <label>裁判</label>
-          <select id="quizJudgeSelect" onchange="saveQuizSetting()"></select>
+          <select id="quizJudgeSelect"></select>
         </div>
         <div class="qm-hint" id="quizHint"></div>
         <div class="qm-actions">
@@ -1749,9 +1749,9 @@ function populateQuizSelects() {
   // 题目下拉
   const qSel = document.getElementById('quizSelect');
   qSel.innerHTML = QUIZ_BANK.map(q => `<option value="${q.id}" ${q.id===quizSelectedId?'selected':''}>${q.title}</option>`).join('');
-  // 裁判下拉——从 providersData 选（只要 api_keys 非空即可，不要求 selected_model）
+  // 裁判下拉——从 providersData 选（只要有 model 或 api_keys 就可选用，放宽避免有 provider 被漏掉）
   const jSel = document.getElementById('quizJudgeSelect');
-  const judges = providersData.filter(p => p.api_keys && p.api_keys.length > 0);
+  const judges = providersData.filter(p => p.selected_model || (p.models && p.models.length > 0));
   let opts = '<option value="">-- 请选择 --</option>' + judges.map(p =>
     `<option value="${esc(p.name)}" ${p.name===quizJudgeProvider?'selected':''}>${esc(p.name)} (${esc(p.selected_model||'未选模型')})</option>`).join('');
   // 保底：如果 quizJudgeProvider 不在可选列表里（provider 被删/改名/model 清空），追加一个灰色选项
@@ -1775,17 +1775,6 @@ function populateQuizSelects() {
     hint.textContent = '选择一道题 + 一个裁判 provider，点「✓ 确认」保存。';
     hint.style.color = 'var(--text2)';
   }
-}
-
-function saveQuizSetting() {
-  // 用户改了下拉时记录选择（不立即启用）
-  quizSelectedId = document.getElementById('quizSelect').value;
-  quizJudgeProvider = document.getElementById('quizJudgeSelect').value;
-  try {
-    localStorage.setItem('quizSelectedId', quizSelectedId);
-    localStorage.setItem('quizJudgeProvider', quizJudgeProvider);
-  } catch(e) {}
-  populateQuizSelects(); // 更新 hint
 }
 
 function confirmQuizSetting() {
