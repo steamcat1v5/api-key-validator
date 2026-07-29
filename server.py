@@ -928,7 +928,7 @@ async def handle_validate(request):
             "elapsed": first.get("elapsed"),
             "error": first.get("error"),
             "usage": first.get("usage"),
-            "multi_results": all_results if len(keys) > 1 else None,
+            "multi_results": all_results,
         }
         save_config(cfg)
 
@@ -1357,6 +1357,33 @@ async def handle_judge(request):
         return web.json_response({"correct": False, "reason": f"裁判调用失败: {e}"}, status=500)
 
 
+async def handle_save_quiz_result(request):
+    """前端智测评分后持久化 multi_results 中的 quiz_correct/quiz_reason"""
+    body = await request.json()
+    name = body.get("name", "")
+    quiz_correct = body.get("quiz_correct")
+    quiz_reason = body.get("quiz_reason", "")
+    quiz_score_summary = body.get("quiz_score_summary", "")
+    multi_results = body.get("multi_results")
+    cfg = load_config()
+    providers = cfg.get("providers", [])
+    for p in providers:
+        if p.get("name", "") == name:
+            ls = p.get("last_status") or {}
+            mrs = ls.get("multi_results") or []
+            if not mrs and multi_results:
+                mrs = multi_results
+                ls["multi_results"] = multi_results
+            if mrs:
+                mrs[0]["quiz_correct"] = quiz_correct
+                mrs[0]["quiz_reason"] = quiz_reason
+            ls["quiz_score_summary"] = quiz_score_summary
+            p["last_status"] = ls
+            save_config(cfg)
+            return web.json_response({"ok": True})
+    return web.json_response({"ok": False, "error": "provider not found"}, status=404)
+
+
 app.router.add_get("/static/{tail:.*}", handle_static)
 app.router.add_get("/api/config", handle_get_config)
 app.router.add_post("/api/config", handle_save_config)
@@ -1367,6 +1394,7 @@ app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/cancel-key", handle_cancel_key)
 app.router.add_post("/api/judge", handle_judge)
 app.router.add_post("/api/judge-batch", handle_judge_batch)
+app.router.add_post("/api/save-quiz-result", handle_save_quiz_result)
 app.router.add_post("/api/select-model", handle_select_model)
 app.router.add_post("/api/select-provider", handle_select_provider)
 app.router.add_post("/api/stream", handle_stream)

@@ -1373,6 +1373,21 @@ async function quizBatchJudge(providerName, quiz, judge, multiResults) {
     renderDetail();
   }
   showToast(`🧠 评分完成: ${correctCnt} 对 / ${wrongCnt} 错`, correctCnt > 0 ? 'success' : 'error');
+  // 6) 持久化评分结果到后端（切换 provider / 刷新页面不丢失）
+  try {
+    const firstResult = okResults[0] || multiResults[0];
+    await fetch('/api/save-quiz-result', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name: providerName,
+        quiz_correct: firstResult?.quiz_correct ?? null,
+        quiz_reason: firstResult?.quiz_reason || '',
+        quiz_score_summary: `${correctCnt} 对 / ${wrongCnt} 错`,
+        multi_results: multiResults,
+      })
+    });
+  } catch(e) { /* 非关键 */ }
 }
 
 async function validateSingle(name, quizMode = false) {
