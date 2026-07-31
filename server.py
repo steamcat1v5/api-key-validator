@@ -622,14 +622,14 @@ async def handle_save_config(request):
     old_key_map = {(p.get("name", ""), p.get("base_url", "")): p.get("api_keys", []) for p in old_providers}
 
     merged = []
-    old_status_map = {p.get("base_url", ""): p.get("last_status") for p in old_providers}
+    old_status_map = {p.get("name", ""): p.get("last_status") for p in old_providers}
     for p in new_providers:
         keys = p.get("api_keys", [])
         if not keys or all("***" in k for k in keys):
             lookup_key = (p.get("name", ""), p.get("base_url", ""))
             keys = old_key_map.get(lookup_key, [])
-        # 保留旧 last_status（前端不传此字段）
-        ls = p.get("last_status") or old_status_map.get(p.get("base_url", ""))
+        # 保留旧 last_status（按 provider name 取，避免同 base_url 互覆盖）
+        ls = p.get("last_status") or old_status_map.get(p.get("name", ""))
         merged.append({
             "name": p.get("name", ""),
             "type": p.get("type", "openai"),
@@ -642,12 +642,17 @@ async def handle_save_config(request):
             "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
-    old_name_map = {p.get("base_url", ""): p.get("name", "") for p in old_providers}
-    for p in merged:
-        new_name = p.get("name", "")
-        old_name = old_name_map.get(p.get("base_url", ""), "")
-        if old_name and old_name != new_name:
-            _rename_provider_log_files(old_name, new_name)
+    # 按 (base_url, api_keys 首个) 做指纹匹配，找到旧 name → 新 name 的映射
+    new_names = {p.get("name", "") for p in merged}
+    for old_p in old_providers:
+        old_name = old_p.get("name", "")
+        if old_name in new_names:
+            continue  # 名字没变
+        # 找 base_url 相同的 new provider，认为是改名
+        old_url = old_p.get("base_url", "")
+        matched = next((p for p in merged if p.get("base_url", "") == old_url and p.get("name", "") not in {op.get("name", "") for op in old_providers}), None)
+        if matched:
+            _rename_provider_log_files(old_name, matched["name"])
 
     # 检测同名 provider 冲突，自动追加 -1/-2 后缀
     seen_names = {}
