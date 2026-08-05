@@ -111,18 +111,21 @@ header h1 { font-size: 18px; font-weight: 600; flex: 1; }
 .provider-item .p-status { font-size: 11px; color: var(--text2); }
 .provider-item .btn-del-item {
   background: none; border: none; color: var(--text2); cursor: pointer;
-  font-size: 13px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  font-size: 13px; padding: 2px 6px; border-radius: 4px;
   opacity: 0; transition: all 0.15s; line-height: 1;
 }
 .provider-item:hover .btn-del-item { opacity: 0.7; }
 .provider-item .btn-del-item:hover { opacity: 1; color: var(--red); background: rgba(255,80,80,0.15); }
 .provider-item .btn-clone-item {
   background: none; border: none; color: var(--text2); cursor: pointer;
-  font-size: 13px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  font-size: 13px; padding: 2px 6px; border-radius: 4px;
   opacity: 0; transition: all 0.15s; line-height: 1;
 }
 .provider-item:hover .btn-clone-item { opacity: 0.7; }
 .provider-item .btn-clone-item:hover { opacity: 1; color: var(--accent); background: rgba(100,160,255,0.15); }
+/* 克隆/删除按钮浮动在右侧，不占布局空间 */
+.provider-item .p-actions { display: flex; gap: 2px; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+.provider-item { position: relative; }
 /* 拖拽排序 */
 .provider-item.dragging { opacity: 0.4; border-style: dashed; }
 .provider-item.drag-over-top { box-shadow: 0 -2px 0 0 var(--accent); }
@@ -521,8 +524,10 @@ function renderList() {
       <span class="p-name">${esc(p.name || '未命名')}</span>
       <span class="p-status">${modelInfo}</span>
       <span class="p-type">${p.type || 'openai'}</span>
-      <button class="btn-clone-item" onclick="event.stopPropagation(); cloneProvider(${i})" title="克隆此 provider（不复制 API key）">⧉</button>
-      <button class="btn-del-item" onclick="event.stopPropagation(); rmProvider(${i})" title="删除">✕</button>
+      <span class="p-actions">
+        <button class="btn-clone-item" onclick="event.stopPropagation(); cloneProvider(${i})" title="克隆此 provider（不复制 API key）">⧉</button>
+        <button class="btn-del-item" onclick="event.stopPropagation(); rmProvider(${i})" title="删除">✕</button>
+      </span>
     </div>`;
   }).join('');
 }
