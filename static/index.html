@@ -495,6 +495,23 @@ async function init() {
   } else if (providersData.length > 0) {
     selectedIdx = 0;
   }
+  // 恢复正在进行的验证状态（刷新页面后）
+  const runningValidations = data.running_validations || {};
+  for (const [rname, runningKeyIndices] of Object.entries(runningValidations)) {
+    const p = providersData.find(x => x.name === rname);
+    if (!p || !p.api_keys || p.api_keys.length === 0) continue;
+    // 构建 key 列表（从 provider 的 api_keys 取预览）
+    const keys = p.api_keys.map((ak, i) => ({
+      key_index: i,
+      key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
+    }));
+    // 显示骨架表格（测试中状态）
+    renderLiveKeyTableSkeleton(rname, keys);
+    // 标记 busy
+    busySet.add(rname);
+    // 开始轮询已完成的结果
+    pollRunningStatus(rname);
+  }
   renderAll();
   // 加载初始 provider 的日志
   if (selectedIdx >= 0 && providersData[selectedIdx]) {
@@ -1255,6 +1272,53 @@ function renderLiveKeyTableHTML(name) {
       <tbody>${rows}</tbody>
     </table>
   </div>`;
+}
+
+// 轮询正在进行的验证状态（刷新页面后恢复用）
+async function pollRunningStatus(name) {
+  try {
+    const resp = await fetch(`${API}/api/validate-status?name=${encodeURIComponent(name)}`);
+    const data = await resp.json();
+    if (data.finished) {
+      // 验证已全部完成，从 last_status 恢复最终结果
+      busySet.delete(name);
+      // 获取最新的 config 来更新 validateResults
+      const cfgResp = await fetch(`${API}/api/config`);
+      const cfg = await cfgResp.json();
+      const p = cfg.providers?.find(x => x.name === name);
+      if (p?.last_status) {
+        validateResults[name] = {
+          status: p.last_status.status || 'error',
+          model: p.last_status.model || p.selected_model || '',
+          content: p.last_status.content || null,
+          elapsed: p.last_status.elapsed != null ? p.last_status.elapsed : null,
+          error: p.last_status.error || null,
+          usage: p.last_status.usage || null,
+          multi_results: p.last_status.multi_results || null,
+        };
+      }
+      // 清理 liveKeyTableMap，切换到固化结果
+      delete liveKeyTableMap[name];
+      if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name) {
+        renderAll();
+      } else {
+        renderList();
+      }
+      return;
+    }
+    // 把已完成的结果填入 liveKeyTableMap
+    if (data.completed) {
+      for (const r of data.completed) {
+        updateLiveKeyRow(name, r);
+      }
+    }
+    // 2 秒后再查
+    setTimeout(() => pollRunningStatus(name), 2000);
+  } catch (e) {
+    console.error('pollRunningStatus error:', e);
+    // 出错也继续轮询
+    setTimeout(() => pollRunningStatus(name), 3000);
+  }
 }
 
 // 开测时调用：登记 key 列表（覆盖旧的已结束结果），并触发 renderDetail 重新绘制

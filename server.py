@@ -23,6 +23,10 @@ MAX_LOG_FILES_PER_PROVIDER = 3
 # for validate_and_push 任务，让前端可通过 /api/cancel-key 取消某个 key 的验证
 _running_tasks = {}
 
+# 全局 dict: (name, key_index) -> result dict
+# 每个 key 验证完后存入，刷新页面后前端可从这里取已完成的中间结果
+_completed_results = {}
+
 
 def _key_preview(ak):
     """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
@@ -617,7 +621,13 @@ async def handle_get_config(request):
     for p in providers:
         if not p.get("last_status"):
             p["last_status"] = get_provider_last_status(p.get("name", ""))
-    return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx})
+    # 从全局 _running_tasks 提取正在验证的 provider 和 key_index 列表
+    running = {}
+    for (pname, kidx) in _running_tasks:
+        task = _running_tasks[(pname, kidx)]
+        if not task.done():
+            running.setdefault(pname, []).append(kidx)
+    return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
 
 
 async def handle_save_config(request):
@@ -862,6 +872,8 @@ async def handle_validate(request):
             result["key_index"] = key_idx
             result["key_preview"] = _key_preview(ak)
             write_provider_log(name, log)
+            # 存入全局中间结果表，刷新页面后前端可取
+            _completed_results[(name, key_idx)] = result
             # 立刻推给前端
             await resp.write(f"event: key_done\ndata: {json.dumps(result, ensure_ascii=False)}\n\n".encode("utf-8"))
             return result, log, None
@@ -876,11 +888,13 @@ async def handle_validate(request):
                 await resp.write(f"event: key_done\ndata: {json.dumps(cancelled, ensure_ascii=False)}\n\n".encode("utf-8"))
             except Exception:
                 pass
+            _completed_results[(name, key_idx)] = cancelled
             # 不重新抛出：把 cancelled 结果作为正常返回值，让 gather 正常收集
             return None, None, cancelled
         except Exception as e:
             err_result = {"ok": False, "status": "error", "model": model, "error": str(e),
                           "key_index": key_idx, "key_preview": _key_preview(ak)}
+            _completed_results[(name, key_idx)] = err_result
             await resp.write(f"event: key_done\ndata: {json.dumps(err_result, ensure_ascii=False)}\n\n".encode("utf-8"))
             return err_result, None, None
 
@@ -905,6 +919,9 @@ async def handle_validate(request):
         # 清理全局 task 表
         for i, _task in enumerate(tasks):
             _running_tasks.pop((name, i), None)
+        # 清理中间结果表（全部完成后不再需要）
+        for i in range(len(keys)):
+            _completed_results.pop((name, i), None)
         # 按原 key_index 顺序汇总结果
         for item in done:
             if isinstance(item, BaseException):
@@ -984,6 +1001,38 @@ async def handle_cancel_key(request):
         return web.json_response({"ok": False, "error": "无对应运行中的任务"}, status=404)
     task.cancel()
     return web.json_response({"ok": True, "name": name, "key_index": key_index})
+
+
+async def handle_validate_status(request):
+    """GET /api/validate-status?name=xxx
+    返回该 provider 当前验证的中间状态：
+    - running: 还在跑的 key_index 列表
+    - completed: 已完成的 key 结果列表（从 _completed_results 取）
+    - 如果不在验证中：返回 finished=True
+    """
+    name = request.query.get("name", "")
+    if not name:
+        return web.json_response({"ok": False, "error": "缺少 name"}, status=400)
+    running = []
+    completed = []
+    for (pname, kidx), task in _running_tasks.items():
+        if pname != name:
+            continue
+        if task.done():
+            # 已完成，从 _completed_results 取结果
+            r = _completed_results.get((pname, kidx))
+            if r:
+                completed.append(r)
+        else:
+            running.append(kidx)
+    # 也收集不在 _running_tasks 但在 _completed_results 里的（边界情况）
+    for (pname, kidx), r in _completed_results.items():
+        if pname == name and r not in completed:
+            completed.append(r)
+    if not running and not completed:
+        return web.json_response({"ok": True, "finished": True})
+    completed.sort(key=lambda r: r.get("key_index", 0))
+    return web.json_response({"ok": True, "finished": False, "running": running, "completed": completed})
 
 
 async def handle_validate_all(request):
@@ -1415,6 +1464,7 @@ app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)
 app.router.add_post("/api/validate-all", handle_validate_all)
 app.router.add_post("/api/cancel-key", handle_cancel_key)
+app.router.add_get("/api/validate-status", handle_validate_status)
 app.router.add_post("/api/judge", handle_judge)
 app.router.add_post("/api/judge-batch", handle_judge_batch)
 app.router.add_post("/api/save-quiz-result", handle_save_quiz_result)
