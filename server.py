@@ -27,6 +27,10 @@ _running_tasks = {}
 # 每个 key 验证完后存入，刷新页面后前端可从这里取已完成的中间结果
 _completed_results = {}
 
+# 全局 dict: name -> 验证开始时间（unix 时间戳，秒）
+# 刷新页面后前端用这个恢复计时
+_validation_start_times = {}
+
 
 def _key_preview(ak):
     """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
@@ -626,7 +630,12 @@ async def handle_get_config(request):
     for (pname, kidx) in _running_tasks:
         task = _running_tasks[(pname, kidx)]
         if not task.done():
-            running.setdefault(pname, []).append(kidx)
+            if pname not in running:
+                running[pname] = {
+                    "key_indices": [],
+                    "started_at": _validation_start_times.get(pname, time.time()),
+                }
+            running[pname]["key_indices"].append(kidx)
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
 
 
@@ -874,8 +883,11 @@ async def handle_validate(request):
             write_provider_log(name, log)
             # 存入全局中间结果表，刷新页面后前端可取
             _completed_results[(name, key_idx)] = result
-            # 立刻推给前端
-            await resp.write(f"event: key_done\ndata: {json.dumps(result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            # 立刻推给前端（SSE 连接可能已断开，推送失败不影响结果）
+            try:
+                await resp.write(f"event: key_done\ndata: {json.dumps(result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            except Exception:
+                pass
             return result, log, None
         except asyncio.CancelledError:
             # 被前端通过 /api/cancel-key 主动取消：推送 cancelled 状态
@@ -892,10 +904,23 @@ async def handle_validate(request):
             # 不重新抛出：把 cancelled 结果作为正常返回值，让 gather 正常收集
             return None, None, cancelled
         except Exception as e:
-            err_result = {"ok": False, "status": "error", "model": model, "error": str(e),
+            # 判断是 SSE 写入失败还是真正的验证异常
+            err_str = str(e)
+            is_sse_error = any(s in err_str for s in ("Cannot write to closing transport", "Connection reset", "ClientConnectionError"))
+            if is_sse_error:
+                # SSE 推送失败，验证本身可能已成功，不覆盖已有的正确结果
+                existing = _completed_results.get((name, key_idx))
+                if existing:
+                    return existing, None, None
+                return {"ok": False, "status": "error", "model": model, "error": "SSE connection lost",
+                        "key_index": key_idx, "key_preview": _key_preview(ak)}, None, None
+            err_result = {"ok": False, "status": "error", "model": model, "error": err_str,
                           "key_index": key_idx, "key_preview": _key_preview(ak)}
             _completed_results[(name, key_idx)] = err_result
-            await resp.write(f"event: key_done\ndata: {json.dumps(err_result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            try:
+                await resp.write(f"event: key_done\ndata: {json.dumps(err_result, ensure_ascii=False)}\n\n".encode("utf-8"))
+            except Exception:
+                pass
             return err_result, None, None
 
     all_results = []   # 完成的验证结果（含 cancelled）按 key_index 顺序排列
@@ -907,6 +932,7 @@ async def handle_validate(request):
             return resp
         # 把每个 key 的验证封装成 asyncio.Task，登记到全局 _running_tasks，
         # 让 /api/cancel-key 可以按 (name, key_index) 取消单个任务
+        _validation_start_times[name] = time.time()
         tasks = []
         for i, ak in enumerate(keys):
             task = asyncio.create_task(validate_and_push(i, ak))
@@ -922,6 +948,8 @@ async def handle_validate(request):
         # 清理中间结果表（全部完成后不再需要）
         for i in range(len(keys)):
             _completed_results.pop((name, i), None)
+        # 清理验证开始时间
+        _validation_start_times.pop(name, None)
         # 按原 key_index 顺序汇总结果
         for item in done:
             if isinstance(item, BaseException):

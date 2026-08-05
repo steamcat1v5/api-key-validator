@@ -497,7 +497,7 @@ async function init() {
   }
   // 恢复正在进行的验证状态（刷新页面后）
   const runningValidations = data.running_validations || {};
-  for (const [rname, runningKeyIndices] of Object.entries(runningValidations)) {
+  for (const [rname, rinfo] of Object.entries(runningValidations)) {
     const p = providersData.find(x => x.name === rname);
     if (!p || !p.api_keys || p.api_keys.length === 0) continue;
     // 构建 key 列表（从 provider 的 api_keys 取预览）
@@ -505,10 +505,15 @@ async function init() {
       key_index: i,
       key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
     }));
-    // 显示骨架表格（测试中状态）
-    renderLiveKeyTableSkeleton(rname, keys);
+    // 用后端返回的开始时间恢复计时（毫秒）
+    const startedAt = rinfo.started_at ? rinfo.started_at * 1000 : Date.now();
+    liveKeyTableMap[rname] = { keys, results: {}, startedAt };
+    // 清空上一轮固化的 multi_results，避免叠加渲染
+    if (validateResults[rname]) validateResults[rname].multi_results = null;
     // 标记 busy
     busySet.add(rname);
+    // 启动秒钟 ticker
+    startPendingTicker();
     // 开始轮询已完成的结果
     pollRunningStatus(rname);
   }
