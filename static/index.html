@@ -430,7 +430,7 @@ let quizSelectedId = '';      // 选中的题目 id
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
 // ─── 快照 & 脏检测 ─────────────────
-const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout'];
+const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout', 'extra_headers'];
 
 function takeSnapshot(p) {
   const snap = {};
@@ -645,6 +645,14 @@ function renderDetail() {
         </select>
       </div>
       <div class="form-group">
+        <details id="headersDetails-${selectedIdx}" style="margin-top:0;${p.extra_headers && Object.keys(p.extra_headers).length > 0 ? '' : ''}">
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);user-select:none;padding:2px 0">🔻 HTTP Header 覆盖（可选）</summary>
+          <textarea id="headersInput-${selectedIdx}" rows="3" style="width:100%;min-height:60px;max-height:200px;font-family:monospace;font-size:12px;margin-top:6px;resize:vertical"
+            placeholder="每行一个 header，key 和 value 用空格分隔，例：&#10;x-client-type cline-cli&#10;X-Custom-Value hello"
+            oninput="updateExtraHeaders(${selectedIdx},this.value)"></textarea>
+        </details>
+      </div>
+      <div class="form-group">
         <label>API Key ${(() => { const ks = p.api_keys||[]; return ks.length > 1 ? `(${ks.length} 个)` : ''; })()}</label>
         <div style="display:flex;gap:6px;align-items:flex-start">
           <textarea class="key-input" style="flex:1;min-height:35px;${(p.api_keys||[]).length > 1 ? 'height:120px;' : ''}max-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;width:100%" 
@@ -674,6 +682,8 @@ function renderDetail() {
       startPendingTicker();
     }
   }
+  // 回填 HTTP Header 覆盖文本框
+  fillExtraHeaders(selectedIdx);
 }
 
 function esc(s) { return (s||'').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>'); }
@@ -893,7 +903,7 @@ async function loadProviderLogs(name) {
 }
 
 function addProvider() {
-  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '', timeout: 60 });
+  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '', timeout: 60, extra_headers: {} });
   selectedIdx = providersData.length - 1;
   // 新增 provider 没有快照，checkDirty 会自动标记为 dirty
   checkDirty(selectedIdx);
@@ -978,6 +988,36 @@ function updField(i, k, v) {
   renderDetail(); // 更新保存按钮状态
 }
 
+// 解析 HTTP Header 覆盖文本框：每行 "key value" → {key: value}
+function parseExtraHeaders(text) {
+  const obj = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const spaceIdx = trimmed.indexOf(' ');
+    if (spaceIdx < 0) continue; // 没空格的行跳过
+    const key = trimmed.slice(0, spaceIdx).trim();
+    const value = trimmed.slice(spaceIdx + 1).trim();
+    if (key) obj[key] = value;
+  }
+  return obj;
+}
+// 将 extra_headers 对象序列化回文本框格式
+function formatExtraHeaders(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  return Object.entries(obj).map(([k, v]) => `${k} ${v}`).join('\n');
+}
+function updateExtraHeaders(i, text) {
+  providersData[i].extra_headers = parseExtraHeaders(text);
+  checkDirty(i);
+}
+function fillExtraHeaders(idx) {
+  const ta = document.getElementById(`headersInput-${idx}`);
+  if (ta) {
+    ta.value = formatExtraHeaders(providersData[idx]?.extra_headers);
+  }
+}
+
 // ─── 保存配置 ─────────────────
 async function saveProvider(i) {
   const p = providersData[i];
@@ -987,7 +1027,8 @@ async function saveProvider(i) {
     providers: providersData.map(pp => ({
       name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
       api_keys: pp.api_keys||[], models: pp.models||[], selected_model: pp.selected_model||'',
-      source_url: pp.source_url||'', timeout: pp.timeout||60
+      source_url: pp.source_url||'', timeout: pp.timeout||60,
+      extra_headers: pp.extra_headers||{}
     })),
     selected_idx: selectedIdx
   };
@@ -1012,7 +1053,8 @@ async function saveConfig(silent) {
     providers: providersData.map(p => ({
       name: p.name, type: p.type||'openai', base_url: p.base_url,
       api_keys: p.api_keys||[], models: p.models||[], selected_model: p.selected_model||'',
-      source_url: p.source_url||'', timeout: p.timeout||60
+      source_url: p.source_url||'', timeout: p.timeout||60,
+      extra_headers: p.extra_headers||{}
     })),
     selected_idx: selectedIdx
   };
@@ -1039,7 +1081,7 @@ async function fetchModels(name) {
   try {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能获取模型
     const p = providersData.find(x => x.name === name);
-    const payload = p ? { name, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai' } : { name };
+    const payload = p ? { name, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', extra_headers: p.extra_headers || {} } : { name };
     const resp = await fetch(`${API}/api/fetch-models`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.logs) data.logs.forEach(l => addLogEntry(l));
@@ -1337,7 +1379,8 @@ async function quizBatchJudge(providerName, quiz, judge, multiResults) {
         name: judge.name, base_url: judge.base_url,
         api_keys: judge.api_keys, type: judge.type || 'openai',
         model: judge.selected_model, timeout: judge.timeout || 60
-      }
+      },
+      judge_extra_headers: judge.extra_headers
     })
   });
   const judgeData = await judgeResp.json();
@@ -1410,7 +1453,7 @@ async function validateSingle(name, quizMode = false) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, prompt: quiz ? quiz.question : 'hi' }
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi' }
       : { name, stream, prompt: quiz ? quiz.question : 'hi' };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
 

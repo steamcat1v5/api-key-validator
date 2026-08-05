@@ -334,12 +334,14 @@ def fmt_json(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
-async def fetch_models_openai(session, base_url, api_key, provider_name):
+async def fetch_models_openai(session, base_url, api_key, provider_name, extra_headers=None):
     """OpenAI 协议: GET /v1/models"""
     base_url = normalize_base_url(base_url)
     url = base_url.rstrip("/") + "/models"
     # 模拟 codex CLI 的 User-Agent 避免被部分上游 API 通过客户端检测拦截
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "codex_cli_rs/0.18.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     req_log = f"─── Request ───\nGET {url}\n{fmt_headers(headers)}"
 
     try:
@@ -375,7 +377,7 @@ async def fetch_models_openai(session, base_url, api_key, provider_name):
         return {"ok": False, "error": str(e), "models": [], "log": log}
 
 
-async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi"):
+async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None):
     """OpenAI 协议: POST /v1/chat/completions
 
     prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
@@ -385,6 +387,8 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
     url = base_url.rstrip("/") + "/chat/completions"
     # 模拟 codex CLI 的 User-Agent 避免被部分上游 API 通过客户端检测拦截
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     # 智力测试题目比 hi 长，max_tokens 给足 500 让模型有空间回答
     max_tokens = 500 if prompt_text != "hi" else 50
     payload = {"model": model, "messages": [{"role": "user", "content": prompt_text}], "max_tokens": max_tokens}
@@ -485,7 +489,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
         return {"ok": False, "status": "error", "model": model, "error": err_msg, "elapsed": elapsed, "log": log}
 
 
-async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi"):
+async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None):
     """Anthropic 协议: POST /v1/messages
 
     prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
@@ -494,6 +498,8 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
     url = base_url.rstrip("/") + "/messages"
     # 同 OpenAI 协议加 codex CLI UA（保持一致；有些网关对 UA 检测）
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     max_tokens = 500 if prompt_text != "hi" else 50
     payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt_text}]}
     if stream:
@@ -639,6 +645,7 @@ async def handle_save_config(request):
             "selected_model": p.get("selected_model", ""),
             "source_url": p.get("source_url", ""),
             "timeout": p.get("timeout", 60),
+            "extra_headers": p.get("extra_headers", {}),
             "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
@@ -705,7 +712,7 @@ async def handle_fetch_models(request):
     else:
         # 新 provider 不在 config 中，先插入到 config 以便后续保存模型列表
         provider = {"name": name, "type": ptype, "base_url": base_url, "api_keys": api_keys,
-                     "models": [], "selected_model": "", "source_url": body.get("source_url", "")}
+                     "models": [], "selected_model": "", "source_url": body.get("source_url", ""), "extra_headers": body.get("extra_headers", {})}
         providers.append(provider)
         cfg["providers"] = providers
 
@@ -716,7 +723,7 @@ async def handle_fetch_models(request):
     logs = []
     async with aiohttp.ClientSession() as session:
         if ptype == "openai":
-            result = await fetch_models_openai(session, base_url, api_keys[0] if api_keys else "", name)
+            result = await fetch_models_openai(session, base_url, api_keys[0] if api_keys else "", name, extra_headers=provider.get("extra_headers"))
             logs.append(result["log"])
             write_provider_log(name, result.get("log", {}))
             if result["ok"]:
@@ -750,7 +757,7 @@ async def handle_fetch_all_models(request):
                 results.append({"name": p.get("name", ""), "ok": False, "error": "缺少配置"})
                 continue
             if p["type"] == "openai":
-                result = await fetch_models_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", p["name"])
+                result = await fetch_models_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", p["name"], extra_headers=p.get("extra_headers"))
                 all_logs.append({**result["log"], "provider": p["name"]})
                 write_provider_log(p["name"], result.get("log", {}))
                 if result["ok"]:
@@ -797,7 +804,9 @@ async def handle_validate(request):
         if api_keys and all("***" in k for k in api_keys):
             api_keys = provider.get("api_keys", api_keys)
     else:
-        timeout = 60
+        timeout = body.get("timeout", 60)
+        # 未保存的新 provider：从请求体取 extra_headers
+        provider = {"extra_headers": body.get("extra_headers", {})}
         # 不在 config 中且前端没传 model → 报错
         if not model:
             return web.json_response({"ok": False, "error": "请先获取模型列表并选择一个模型", "logs": []})
@@ -834,10 +843,11 @@ async def handle_validate(request):
         到 cancelled_results，供 done 事件的 multi_results 引用。
         """
         try:
+            eh = (provider or {}).get("extra_headers")
             if ptype == "openai":
-                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text)
+                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh)
             elif ptype == "anthropic":
-                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text)
+                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh)
             else:
                 return None, None, None
             log = result.get("log", {})
@@ -983,10 +993,11 @@ async def handle_validate_all(request):
             return {"name": p.get("name", ""), "ok": False, "status": "no_model", "error": "未选择模型"}, None
         timeout = p.get("timeout", 60)
         result = None
+        eh = p.get("extra_headers")
         if p["type"] == "openai":
-            result = await validate_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
+            result = await validate_openai(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout, extra_headers=eh)
         elif p["type"] == "anthropic":
-            result = await validate_anthropic(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout)
+            result = await validate_anthropic(session, p["base_url"], p["api_keys"][0] if p.get("api_keys") else "", model, p["name"], stream=stream, timeout=timeout, extra_headers=eh)
         else:
             return {"name": p["name"], "ok": False, "status": "error", "error": f"不支持的类型: {p['type']}"}, None
         log = result.get("log", {})
@@ -1196,10 +1207,11 @@ async def handle_judge_batch(request):
     timeout = aiohttp.ClientTimeout(total=jtimeout)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
+            judge_extra = body.get("judge_extra_headers")
             if jtype == "openai":
-                result = await validate_openai(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+                result = await validate_openai(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt, extra_headers=judge_extra)
             elif jtype == "anthropic":
-                result = await validate_anthropic(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt)
+                result = await validate_anthropic(session, base_url, api_key, model, "judge-batch", stream=False, timeout=jtimeout, prompt_text=judge_prompt, extra_headers=judge_extra)
             else:
                 return web.json_response({"results": [], "reason": f"不支持协议: {jtype}"}, status=400)
 
