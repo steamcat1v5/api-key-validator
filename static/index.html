@@ -647,7 +647,7 @@ function renderDetail() {
       <div class="form-group">
         <details id="headersDetails-${selectedIdx}" style="margin-top:0;${p.extra_headers && Object.keys(p.extra_headers).length > 0 ? '' : ''}">
           <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);user-select:none;padding:2px 0">🔻 HTTP Header 覆盖（可选）</summary>
-          <textarea id="headersInput-${selectedIdx}" rows="3" style="width:100%;min-height:60px;max-height:200px;font-family:monospace;font-size:12px;margin-top:6px;resize:vertical"
+          <textarea id="headersInput-${selectedIdx}" rows="3" style="width:100%;min-height:60px;max-height:200px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.4;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;resize:vertical"
             placeholder="每行一个 header，key 和 value 用空格分隔，例：&#10;x-client-type cline-cli&#10;X-Custom-Value hello"
             oninput="updateExtraHeaders(${selectedIdx},this.value)"></textarea>
         </details>
@@ -1010,6 +1010,16 @@ function formatExtraHeaders(obj) {
 function updateExtraHeaders(i, text) {
   providersData[i].extra_headers = parseExtraHeaders(text);
   checkDirty(i);
+  // 只更新保存按钮状态，不调 renderDetail 避免 textarea 失焦
+  const btn = document.querySelector(`#detailContent .btn-save, #detailContent button[onclick^="saveProvider"]`);
+  if (btn) {
+    const dirty = isDirty(i);
+    btn.disabled = !dirty;
+    btn.textContent = dirty ? '💾 保存' : '💾 已保存';
+    btn.className = `btn ${dirty ? 'btn-save' : 'btn-secondary'}`;
+  }
+  // 也更新列表项的 dirty 圆点
+  renderList();
 }
 function fillExtraHeaders(idx) {
   const ta = document.getElementById(`headersInput-${idx}`);

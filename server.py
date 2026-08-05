@@ -709,6 +709,9 @@ async def handle_fetch_models(request):
         base_url = base_url or provider.get("base_url", "")
         api_keys = api_keys or provider.get("api_keys", [])
         ptype = ptype if ptype != "openai" or provider.get("type") else provider.get("type", "openai")
+        # extra_headers: 前端 body 优先
+        eh = body.get("extra_headers")
+        provider["extra_headers"] = eh if eh is not None else provider.get("extra_headers", {})
     else:
         # 新 provider 不在 config 中，先插入到 config 以便后续保存模型列表
         provider = {"name": name, "type": ptype, "base_url": base_url, "api_keys": api_keys,
@@ -801,6 +804,9 @@ async def handle_validate(request):
         ptype = ptype or provider.get("type", "openai")
         model = model or provider.get("selected_model", "")
         timeout = body.get("timeout") or provider.get("timeout", 60)
+        # extra_headers: 前端 body 优先（未保存的修改也能即时生效），fallback 到 config
+        eh = body.get("extra_headers")
+        provider["extra_headers"] = eh if eh is not None else provider.get("extra_headers", {})
         if api_keys and all("***" in k for k in api_keys):
             api_keys = provider.get("api_keys", api_keys)
     else:
