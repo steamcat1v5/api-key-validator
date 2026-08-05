@@ -463,11 +463,16 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                 if status == 200:
                     if not isinstance(body_json, dict):
                         return {"ok": False, "status": "error", "model": model, "error": "响应格式异常", "log": log}
-                    usage = body_json.get("usage", {})
+                    usage = body_json.get("usage") or body_json.get("data", {}).get("usage", {})
                     content = ""
-                    choices = body_json.get("choices", [])
+                    choices = body_json.get("choices") or body_json.get("data", {}).get("choices", [])
                     if choices:
-                        content = choices[0].get("message", {}).get("content", "")[:80]
+                        msg = choices[0].get("message", {})
+                        content = msg.get("content", "")
+                        # 部分网关(如 Cline) content 为空时回复在 reasoning 字段
+                        if not content:
+                            content = msg.get("reasoning", "") or msg.get("reasoning_content", "")
+                        content = content[:80] if content else ""
                     return {
                         "ok": True, "status": "available", "model": model,
                         "stream": False, "usage": usage, "content": content, "elapsed": elapsed,
