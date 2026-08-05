@@ -1615,6 +1615,9 @@ async function validateSingle(name, quizMode = false) {
 }
 
 async function validateAll() {
+  const count = providersData.filter(p => p.selected_model).length;
+  if (count === 0) { showToast('⚠️ 没有可验证的 Provider（需已选模型）', 'error', 3000); return; }
+  if (!confirm(`确定要批量验证 ${count} 个 Provider 吗？`)) return;
   const stream = document.getElementById('chkStream').checked;
   // 把所有有模型的 provider 加入 busySet
   providersData.forEach(p => { if (p.selected_model) busySet.add(p.name); });
@@ -1767,6 +1770,7 @@ function switchLogTab(entryId, tab) {
 async function clearLogs() {
   const p = providersData[selectedIdx];
   if (!p) { showToast('⚠️ 请先选择一个 Provider', 'error', 3000); return; }
+  if (!confirm(`确定要清空「${p.name}」的日志吗？`)) return;
   // 前端立即清空
   logEntriesByProvider[p.name] = [];
   renderLog();
