@@ -922,7 +922,7 @@ async function loadProviderLogs(name) {
       const entryId = ++logEntryCounter;
       logTabStates[entryId] = 'response';
       return { id: entryId, ...e };
-    });
+    }).reverse(); // 后端返回正序(旧→新)，前端需要倒序(新→旧)与实时添加一致
     logEntriesByProvider[name] = entries;
     // 只有当前选中的 provider 才刷新显示
     const currentP = providersData[selectedIdx];
