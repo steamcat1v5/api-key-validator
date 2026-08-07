@@ -290,6 +290,13 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
   background: var(--surface3); color: var(--text2);
   border: 1px solid var(--border);
 }
+.live-key-table-wrap .lk-ops { white-space: nowrap; }
+.live-key-table-wrap .lk-retest {
+  padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;
+  background: var(--surface3); color: var(--text1); border: 1px solid var(--border);
+  cursor: pointer; transition: all 0.15s; line-height: 1.4; white-space: nowrap;
+}
+.live-key-table-wrap .lk-retest:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ─── 日志 ─── */
 .log-panel { background: #0c0e14; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
@@ -1255,13 +1262,17 @@ function renderLiveKeyTableHTML(name) {
     if (quizBadge) detailStr += quizBadge;
     // title 让鼠标 hover 时显示完整内容 (因为详情列被截断了)
     const titleAttr = result.error ? `title="${esc(result.error + (result.elapsed != null ? ' (' + elapsedStr + ')' : ''))}"` : (result.content ? `title="${esc(String(result.content))}"` : '');
-    const btnText = statusVal === 'cancelled' ? '⏹ 已停止' : '已完成';
-    return `<tr id="${rowId}">
+    const isRunning = busySet.has(name);
+    const retestBtns = isRunning
+      ? `<button class="lk-stop" disabled>已完成</button>`
+      : `<button class="lk-retest" onclick="validateSingleKey('${escName}', ${k.key_index}, false)">🔍 验证</button>`
+        + `<button class="lk-retest" onclick="validateSingleKey('${escName}', ${k.key_index}, true)" style="margin-left:4px">🧠 智测</button>`;
+    return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
       <td class="lk-key" title="${esc(k.key_preview || '')}">${esc(k.key_preview || '')}</td>
       <td class="lk-status ${statusVal}">${statusLabel}</td>
       <td class="lk-elapsed">${elapsedStr}</td>
       <td class="lk-detail" ${titleAttr}>${detailStr}</td>
-      <td><button class="lk-stop" disabled>${btnText}</button></td>
+      <td class="lk-ops">${retestBtns}</td>
     </tr>`;
   }).join('');
   return `<div class="live-key-table-wrap" id="live-key-table-${cssEscape(name)}">
@@ -1611,6 +1622,92 @@ async function validateSingle(name, quizMode = false) {
   }
   busySet.delete(name);
   clearLiveKeyTable(name); // 防御性兜底：确保实时表格被清理
+  renderAll();
+}
+
+// 单个 key 重测/智测：只验证指定 key_index 的 key，完成后更新该行
+async function validateSingleKey(name, keyIndex, quizMode = false) {
+  const quiz = quizMode ? getCurrentQuiz() : null;
+  const judge = quizMode ? getJudgeProvider() : null;
+  if (quizMode && (!quiz || !judge)) {
+    showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
+    return;
+  }
+  if (quizMode && judge && (!judge.api_keys || judge.api_keys.length === 0 || !judge.api_keys[0])) {
+    showToast(`⚠️ 裁判「${judge.name}」没有 API Key，无法评分`, 'error');
+    return;
+  }
+  const p = providersData.find(x => x.name === name);
+  if (!p || !p.selected_model) { showToast('⚠️ 未选择模型', 'error'); return; }
+  // 把该行标记为测试中
+  const rowEl = document.querySelector(`#live-key-table-${cssEscape(name)} tr[data-key-idx="${keyIndex}"]`);
+  if (rowEl) {
+    const statusCell = rowEl.querySelector('.lk-status');
+    const elapsedCell = rowEl.querySelector('.lk-elapsed');
+    const detailCell = rowEl.querySelector('.lk-detail');
+    const opsCell = rowEl.querySelector('.lk-ops');
+    if (statusCell) { statusCell.className = 'lk-status pending'; statusCell.textContent = '⏳ 测试中... 0s'; statusCell.dataset.startedAt = Date.now(); }
+    if (elapsedCell) elapsedCell.textContent = '-';
+    if (detailCell) detailCell.textContent = '';
+    if (opsCell) opsCell.innerHTML = '<button class="lk-stop" disabled>测试中</button>';
+    rowEl.dataset.name = name;
+    // 重启 ticker 计时
+    startPendingTicker();
+  }
+  const stream = document.getElementById('chkStream').checked;
+  try {
+    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_index: keyIndex };
+    const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let singleResult = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const lines = raw.split('\n');
+        let dataLine = '';
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+          else if (line.startsWith('data: ')) dataLine += line.slice(6);
+        }
+        if (!dataLine) continue;
+        try {
+          const data = JSON.parse(dataLine);
+          if (eventType === 'key_done') {
+            if (data.log) addLogEntry(data.log);
+            singleResult = data;
+            updateLiveKeyRow(name, data);
+            if (quizMode && data.ok && data.content) {
+              updateLiveKeyRowQuizPending(name, data.key_index);
+            }
+          } else if (eventType === 'done') {
+            // 单 key 重测完成：更新 validateResults 的多 key 表格
+            const finalMulti = data.multi_results || (singleResult ? [singleResult] : null);
+            if (finalMulti) {
+              validateResults[name] = validateResults[name] || {};
+              validateResults[name].multi_results = finalMulti;
+              validateResults[name].status = data.status;
+            }
+            renderAll();
+            if (quizMode && finalMulti) {
+              await quizBatchJudge(name, quiz, judge, finalMulti);
+            }
+          } else if (eventType === 'error') {
+            showToast(`❌ 「${name}」验证失败: ${data.error || '未知错误'}`, 'error');
+          }
+        } catch(e) { /* 忽略解析错误 */ }
+      }
+    }
+  } catch(e) {
+    showToast('❌ 验证失败: ' + e.message, 'error');
+  }
   renderAll();
 }
 

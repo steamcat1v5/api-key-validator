@@ -849,6 +849,14 @@ async def handle_validate(request):
     if not keys:
         return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
 
+    # 支持单个 key 重测：传入 key_index 时只验证那一个 key
+    key_index_filter = body.get("key_index")
+    if key_index_filter is not None and 0 <= key_index_filter < len(keys):
+        orig_key_index = key_index_filter
+        keys = [keys[key_index_filter]]
+    else:
+        orig_key_index = None
+
     # 用 SSE 流式响应：每个 key 验证完立刻 push 一条事件，前端实时显示
     resp = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream",
@@ -859,9 +867,10 @@ async def handle_validate(request):
     await resp.prepare(request)
 
     # 立刻推送 start 事件：列出所有待测 key 的脱敏预览，前端收到即可渲染骨架表格
+    # key_index 用原始索引（单 key 重测时也保持对应行号）
     start_payload = {
         "name": name,
-        "keys": [{"key_index": i, "key_preview": _key_preview(ak)} for i, ak in enumerate(keys)],
+        "keys": [{"key_index": (orig_key_index if orig_key_index is not None else i), "key_preview": _key_preview(ak)} for i, ak in enumerate(keys)],
     }
     await resp.write(f"event: start\ndata: {json.dumps(start_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
 
@@ -940,8 +949,10 @@ async def handle_validate(request):
         _validation_start_times[name] = time.time()
         tasks = []
         for i, ak in enumerate(keys):
-            task = asyncio.create_task(validate_and_push(i, ak))
-            _running_tasks[(name, i)] = task
+            # 单 key 重测时用原始 key_index 做映射
+            real_idx = orig_key_index if orig_key_index is not None else i
+            task = asyncio.create_task(validate_and_push(real_idx, ak))
+            _running_tasks[(name, real_idx)] = task
             tasks.append(task)
         # return_exceptions=True：即使某个 task 内部异常不被自身 try/except 兜住，
         # 也不会让整个 gather 抛错；当前实现里 validate_and_push 已吃掉所有异常，
@@ -949,10 +960,12 @@ async def handle_validate(request):
         done = await asyncio.gather(*tasks, return_exceptions=True)
         # 清理全局 task 表
         for i, _task in enumerate(tasks):
-            _running_tasks.pop((name, i), None)
+            real_idx = orig_key_index if orig_key_index is not None else i
+            _running_tasks.pop((name, real_idx), None)
         # 清理中间结果表（全部完成后不再需要）
         for i in range(len(keys)):
-            _completed_results.pop((name, i), None)
+            real_idx = orig_key_index if orig_key_index is not None else i
+            _completed_results.pop((name, real_idx), None)
         # 清理验证开始时间
         _validation_start_times.pop(name, None)
         # 按原 key_index 顺序汇总结果
@@ -992,6 +1005,29 @@ async def handle_validate(request):
     if provider and all_results:
         # 优先取第一个非 cancelled 结果作为展示主体
         first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
+        merged_multi = all_results  # 默认用本次验证结果
+        # 单 key 重测：合并到现有 multi_results 中（替换对应 key_index 位置）
+        if orig_key_index is not None and provider.get("last_status", {}).get("multi_results"):
+            existing = list(provider["last_status"]["multi_results"])
+            # 确保列表足够长
+            while len(existing) <= orig_key_index:
+                existing.append({"status": "error", "error": "无需试"})
+            # 用新结果替换（保留旧的成功 result 如果新结果没返回 content）
+            new_result = all_results[0]
+            existing[orig_key_index] = new_result
+            merged_multi = existing
+            # 重新计算 overall status
+            merged_statuses = [r.get("status", "error") for r in merged_multi]
+            if all(s == "available" for s in merged_statuses):
+                overall_status = "available"
+            elif any(s == "available" for s in merged_statuses):
+                overall_status = "mixed"
+            else:
+                overall_status = merged_statuses[0]
+            # 取第一个 available 的结果作为展示主体
+            first = next((r for r in merged_multi if r.get("status") == "available"), first)
+        else:
+            merged_multi = all_results
         provider["last_status"] = {
             "status": overall_status,
             "model": first.get("model", model),
@@ -999,16 +1035,16 @@ async def handle_validate(request):
             "elapsed": first.get("elapsed"),
             "error": first.get("error"),
             "usage": first.get("usage"),
-            "multi_results": all_results,
+            "multi_results": merged_multi,
         }
         save_config(cfg)
 
     # 推送最终汇总事件
     summary = {
         "status": overall_status,
-        "multi_results": all_results,
+        "multi_results": merged_multi if orig_key_index is not None else all_results,
         "logs": logs,
-        "total": len(all_results),
+        "total": len(merged_multi) if orig_key_index is not None else len(all_results),
     }
     await resp.write(f"event: done\ndata: {json.dumps(summary, ensure_ascii=False)}\n\n".encode("utf-8"))
     await resp.write_eof()
