@@ -1680,15 +1680,27 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   if (!p || !p.selected_model) { showToast('⚠️ 未选择模型', 'error'); return; }
   // 建立/更新 liveKeyTableMap：保留已有结果，把目标 key 标记为 pending
   const existingMulti = validateResults[name]?.multi_results || [];
+  const oldEntry = liveKeyTableMap[name];
   const allKeys = p.api_keys.map((ak, i) => ({
     key_index: i,
     key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
   }));
+  // resultsMap 优先从旧的 liveEntry 取（保留正在进行的 key 的状态），
+  // 没有 liveEntry 的 key 再从固化的 existingMulti 取
+  // 但正在 pending 的 key（pendingKeys 里有）不放 result，让它显示骨架
+  const oldPendingKeys = oldEntry?.pendingKeys || {};
   const resultsMap = {};
   for (const k of allKeys) {
-    const existing = existingMulti.find(m => m.key_index === k.key_index);
-    if (k.key_index !== keyIndex && existing) {
-      resultsMap[k.key_index] = existing;
+    if (k.key_index === keyIndex) continue; // 新目标 key 不放 result
+    if (oldPendingKeys[k.key_index]) continue; // 旧 pending key 不放 result
+    // 优先用 liveEntry 里已有的结果
+    const fromLive = oldEntry?.results?.[k.key_index];
+    if (fromLive) {
+      resultsMap[k.key_index] = fromLive;
+    } else {
+      // 否则从固化结果取
+      const existing = existingMulti.find(m => m.key_index === k.key_index);
+      if (existing) resultsMap[k.key_index] = existing;
     }
   }
   // 记录每个 key 的 pending 状态（验证/智测）
