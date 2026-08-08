@@ -1206,6 +1206,8 @@ function renderLiveKeyTableHTML(name) {
 
   // 测试中用 entry.keys 顺序（含未完成骨架），已结束用 multi 的固化结果
   const isPlaying = !!entry;
+  const isQuiz = !!entry?.quizMode;
+  const pendingLabel = isQuiz ? '🧠 智测中' : '🔍 验证中';
   const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
   const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
   const total = keys.length;
@@ -1228,10 +1230,10 @@ function renderLiveKeyTableHTML(name) {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - (entry?.startedAt || Date.now())) / 1000));
       return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
-        <td class="lk-status pending" data-started-at="${entry?.startedAt || Date.now()}">⏳ 测试中... ${elapsedSec}s</td>
+        <td class="lk-status pending" data-started-at="${entry?.startedAt || Date.now()}" data-pending-label="${pendingLabel}">${pendingLabel}... ${elapsedSec}s</td>
         <td class="lk-elapsed">-</td>
         <td class="lk-detail"></td>
-        <td><button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button></td>
+        <td class="lk-ops"><button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button></td>
       </tr>`;
     }
     const statusVal = result.status || 'error';
@@ -1339,8 +1341,8 @@ async function pollRunningStatus(name) {
 
 // 开测时调用：登记 key 列表（覆盖旧的已结束结果），并触发 renderDetail 重新绘制
 // 同一个表格原地更新：标题变回「测试中实时状态」，所有行重置为骨架
-function renderLiveKeyTableSkeleton(name, keys) {
-  liveKeyTableMap[name] = { keys, results: {}, startedAt: Date.now() };
+function renderLiveKeyTableSkeleton(name, keys, quizMode = false) {
+  liveKeyTableMap[name] = { keys, results: {}, startedAt: Date.now(), quizMode };
   // 清空上一轮固化的 multi_results，避免 renderLiveKeyTableHTML 再叠加渲染
   if (validateResults[name]) validateResults[name].multi_results = null;
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
@@ -1375,7 +1377,8 @@ function tickPendingRows() {
     const startedAt = parseInt(td.getAttribute('data-started-at'), 10);
     if (!startedAt) return;
     const sec = Math.floor((now - startedAt) / 1000);
-    td.textContent = `⏳ 测试中... ${sec}s`;
+    const label = td.getAttribute('data-pending-label') || '⏳ 测试中';
+    td.textContent = `${label}... ${sec}s`;
   });
 }
 
@@ -1580,7 +1583,7 @@ async function validateSingle(name, quizMode = false) {
           if (eventType === 'start') {
             // 收到 key 列表：渲染骨架表格
             const keyList = (data.keys || []).map(k => ({ key_index: k.key_index, key_preview: k.key_preview }));
-            renderLiveKeyTableSkeleton(name, keyList);
+            renderLiveKeyTableSkeleton(name, keyList, quizMode);
           } else if (eventType === 'key_done') {
             // 单个 key 验证完（含 cancelled），更新对应行 + 推日志
             if (data.log) addLogEntry(data.log);
@@ -1646,10 +1649,10 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
     const elapsedCell = rowEl.querySelector('.lk-elapsed');
     const detailCell = rowEl.querySelector('.lk-detail');
     const opsCell = rowEl.querySelector('.lk-ops');
-    if (statusCell) { statusCell.className = 'lk-status pending'; statusCell.textContent = '⏳ 测试中... 0s'; statusCell.dataset.startedAt = Date.now(); }
+    if (statusCell) { statusCell.className = 'lk-status pending'; statusCell.textContent = quizMode ? '🧠 智测中... 0s' : '🔍 验证中... 0s'; statusCell.dataset.startedAt = Date.now(); statusCell.dataset.pendingLabel = quizMode ? '🧠 智测中' : '🔍 验证中'; }
     if (elapsedCell) elapsedCell.textContent = '-';
     if (detailCell) detailCell.textContent = '';
-    if (opsCell) opsCell.innerHTML = '<button class="lk-stop" disabled>测试中</button>';
+    if (opsCell) opsCell.innerHTML = `<button class="lk-stop" disabled>${quizMode ? '智测中' : '验证中'}</button>`;
     rowEl.dataset.name = name;
     // 重启 ticker 计时
     startPendingTicker();
