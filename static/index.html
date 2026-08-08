@@ -526,9 +526,13 @@ async function init() {
       // 正在运行的 key 不放 results → 渲染为 pending 骨架
     }
     const startedAt = rinfo.started_at ? rinfo.started_at * 1000 : Date.now();
-    liveKeyTableMap[rname] = { keys: allKeys, results: resultsMap, startedAt };
-    // 标记 busy
-    busySet.add(rname);
+    // 从后端的 quiz_key_indices 构造 pendingKeys
+    const quizKeySet = new Set(rinfo.quiz_key_indices || []);
+    const pendingKeys = {};
+    for (const kidx of runningKeyIndices) {
+      pendingKeys[kidx] = quizKeySet.has(kidx) ? 'quiz' : 'verify';
+    }
+    liveKeyTableMap[rname] = { keys: allKeys, results: resultsMap, startedAt, pendingKeys };
     // 启动秒钟 ticker
     startPendingTicker();
     // 开始轮询已完成的结果
@@ -1216,8 +1220,15 @@ function renderLiveKeyTableHTML(name) {
 
   // 测试中用 entry.keys 顺序（含未完成骨架），已结束用 multi 的固化结果
   const isPlaying = !!entry;
-  const isQuiz = !!entry?.quizMode;
-  const pendingLabel = isQuiz ? '🧠 智测中' : '🔍 验证中';
+  // pendingKeys: { keyIndex: 'verify' | 'quiz' } — 单 key 重测时区分验证/智测
+  const pendingKeys = entry?.pendingKeys || {};
+  // 全局 quizMode（批量验证时用），单 key 重测时从 pendingKeys 取
+  const getPendingLabel = (keyIdx) => {
+    const mode = pendingKeys[keyIdx];
+    if (mode === 'quiz') return '🧠 智测中';
+    if (mode === 'verify') return '🔍 验证中';
+    return entry?.quizMode ? '🧠 智测中' : '🔍 验证中';
+  };
   const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
   const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
   const total = keys.length;
@@ -1238,12 +1249,19 @@ function renderLiveKeyTableHTML(name) {
       // 骨架行（只有测试中才看到）— 状态文本由 lk-pending-ticker 每秒更新秒数
       // 初值在这里直接算出，避免 renderDetail 重新渲染后短暂显示「0s」错值
       const elapsedSec = Math.max(0, Math.floor((Date.now() - (entry?.startedAt || Date.now())) / 1000));
+      const label = getPendingLabel(k.key_index);
+      const opsLabel = pendingKeys[k.key_index] === 'quiz' ? '智测中' : (pendingKeys[k.key_index] === 'verify' ? '验证中' : (entry?.quizMode ? '智测中' : '验证中'));
+      // 单 key 重测：有停止按钮可取消；已有结果但非 global busy：无停止按钮
+      const isGlobalRunning = busySet.has(name);
+      const stopBtn = isGlobalRunning
+        ? `<button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button>`
+        : `<button class="lk-stop" disabled>${opsLabel}</button>`;
       return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
-        <td class="lk-status pending" data-started-at="${entry?.startedAt || Date.now()}" data-pending-label="${pendingLabel}">${pendingLabel}... ${elapsedSec}s</td>
+        <td class="lk-status pending" data-started-at="${entry?.startedAt || Date.now()}" data-pending-label="${label}">${label}... ${elapsedSec}s</td>
         <td class="lk-elapsed">-</td>
         <td class="lk-detail"></td>
-        <td class="lk-ops"><button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button></td>
+        <td class="lk-ops">${stopBtn}</td>
       </tr>`;
     }
     const statusVal = result.status || 'error';
@@ -1660,21 +1678,35 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   }
   const p = providersData.find(x => x.name === name);
   if (!p || !p.selected_model) { showToast('⚠️ 未选择模型', 'error'); return; }
-  // 把该行标记为测试中
-  const rowEl = document.querySelector(`#live-key-table-${cssEscape(name)} tr[data-key-idx="${keyIndex}"]`);
-  if (rowEl) {
-    const statusCell = rowEl.querySelector('.lk-status');
-    const elapsedCell = rowEl.querySelector('.lk-elapsed');
-    const detailCell = rowEl.querySelector('.lk-detail');
-    const opsCell = rowEl.querySelector('.lk-ops');
-    if (statusCell) { statusCell.className = 'lk-status pending'; statusCell.textContent = quizMode ? '🧠 智测中... 0s' : '🔍 验证中... 0s'; statusCell.dataset.startedAt = Date.now(); statusCell.dataset.pendingLabel = quizMode ? '🧠 智测中' : '🔍 验证中'; }
-    if (elapsedCell) elapsedCell.textContent = '-';
-    if (detailCell) detailCell.textContent = '';
-    if (opsCell) opsCell.innerHTML = `<button class="lk-stop" disabled>${quizMode ? '智测中' : '验证中'}</button>`;
-    rowEl.dataset.name = name;
-    // 重启 ticker 计时
-    startPendingTicker();
+  // 建立/更新 liveKeyTableMap：保留已有结果，把目标 key 标记为 pending
+  const existingMulti = validateResults[name]?.multi_results || [];
+  const allKeys = p.api_keys.map((ak, i) => ({
+    key_index: i,
+    key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
+  }));
+  const resultsMap = {};
+  for (const k of allKeys) {
+    const existing = existingMulti.find(m => m.key_index === k.key_index);
+    if (k.key_index !== keyIndex && existing) {
+      resultsMap[k.key_index] = existing;
+    }
   }
+  // 记录每个 key 的 pending 状态（验证/智测）
+  if (!liveKeyTableMap[name]) liveKeyTableMap[name] = {};
+  liveKeyTableMap[name] = {
+    ...liveKeyTableMap[name],
+    keys: allKeys,
+    results: resultsMap,
+    startedAt: liveKeyTableMap[name]?.startedAt || Date.now(),
+    pendingKeys: { ...(liveKeyTableMap[name]?.pendingKeys || {}) },
+  };
+  liveKeyTableMap[name].pendingKeys[keyIndex] = quizMode ? 'quiz' : 'verify';
+  // 渲染表格
+  if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name) {
+    renderDetail();
+  }
+  // 重启 ticker 计时
+  startPendingTicker();
   const stream = document.getElementById('chkStream').checked;
   try {
     const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_index: keyIndex };
@@ -1716,17 +1748,35 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
               validateResults[name].multi_results = finalMulti;
               validateResults[name].status = data.status;
             }
+            // 清理该 key 的 pending 状态
+            if (liveKeyTableMap[name]?.pendingKeys) {
+              delete liveKeyTableMap[name].pendingKeys[keyIndex];
+              // 如果没有 pending key 了，清理整个 liveKeyTableMap
+              if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) {
+                delete liveKeyTableMap[name];
+              }
+            }
             renderAll();
             if (quizMode && finalMulti) {
               await quizBatchJudge(name, quiz, judge, finalMulti);
             }
           } else if (eventType === 'error') {
+            if (liveKeyTableMap[name]?.pendingKeys) {
+              delete liveKeyTableMap[name].pendingKeys[keyIndex];
+              if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
+            }
+            renderAll();
             showToast(`❌ 「${name}」验证失败: ${data.error || '未知错误'}`, 'error');
           }
         } catch(e) { /* 忽略解析错误 */ }
       }
     }
   } catch(e) {
+    if (liveKeyTableMap[name]?.pendingKeys) {
+      delete liveKeyTableMap[name].pendingKeys[keyIndex];
+      if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
+    }
+    renderAll();
     showToast('❌ 验证失败: ' + e.message, 'error');
   }
   renderAll();

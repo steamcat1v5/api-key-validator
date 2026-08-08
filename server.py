@@ -31,6 +31,9 @@ _completed_results = {}
 # 刷新页面后前端用这个恢复计时
 _validation_start_times = {}
 
+# 全局 set: (name, key_index) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
+_running_quiz_keys = set()
+
 
 def _key_preview(ak):
     """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
@@ -640,9 +643,12 @@ async def handle_get_config(request):
             if pname not in running:
                 running[pname] = {
                     "key_indices": [],
+                    "quiz_key_indices": [],
                     "started_at": _validation_start_times.get(pname, time.time()),
                 }
             running[pname]["key_indices"].append(kidx)
+            if (pname, kidx) in _running_quiz_keys:
+                running[pname]["quiz_key_indices"].append(kidx)
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
 
 
@@ -955,6 +961,8 @@ async def handle_validate(request):
             real_idx = orig_key_index if orig_key_index is not None else i
             task = asyncio.create_task(validate_and_push(real_idx, ak))
             _running_tasks[(name, real_idx)] = task
+            if prompt_text != "hi":
+                _running_quiz_keys.add((name, real_idx))
             tasks.append(task)
         # return_exceptions=True：即使某个 task 内部异常不被自身 try/except 兜住，
         # 也不会让整个 gather 抛错；当前实现里 validate_and_push 已吃掉所有异常，
@@ -964,6 +972,7 @@ async def handle_validate(request):
         for i, _task in enumerate(tasks):
             real_idx = orig_key_index if orig_key_index is not None else i
             _running_tasks.pop((name, real_idx), None)
+            _running_quiz_keys.discard((name, real_idx))
         # 清理中间结果表（全部完成后不再需要）
         for i in range(len(keys)):
             real_idx = orig_key_index if orig_key_index is not None else i
