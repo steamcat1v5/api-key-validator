@@ -1265,8 +1265,8 @@ function renderLiveKeyTableHTML(name) {
     const isRunning = busySet.has(name);
     const retestBtns = isRunning
       ? `<button class="lk-stop" disabled>已完成</button>`
-      : `<button class="lk-retest" onclick="validateSingleKey('${escName}', ${k.key_index}, false)">🔍 验证</button>`
-        + `<button class="lk-retest" onclick="validateSingleKey('${escName}', ${k.key_index}, true)" style="margin-left:4px">🧠 智测</button>`;
+      : `<button class="lk-retest" title="验证" onclick="validateSingleKey('${escName}', ${k.key_index}, false)">🔍</button>`
+        + `<button class="lk-retest" title="智测" onclick="validateSingleKey('${escName}', ${k.key_index}, true)" style="margin-left:2px">🧠</button>`;
     return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
       <td class="lk-key" title="${esc(k.key_preview || '')}">${esc(k.key_preview || '')}</td>
       <td class="lk-status ${statusVal}">${statusLabel}</td>
