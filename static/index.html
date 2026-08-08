@@ -1262,8 +1262,16 @@ function renderLiveKeyTableHTML(name) {
       quizBadge = ` <span style="color:var(--orange)">${esc(result.quiz_reason.slice(0, 60))}</span>`;
     }
     if (quizBadge) detailStr += quizBadge;
-    // title 让鼠标 hover 时显示完整内容 (因为详情列被截断了)
-    const titleAttr = result.error ? `title="${esc(result.error + (result.elapsed != null ? ' (' + elapsedStr + ')' : ''))}"` : (result.content ? `title="${esc(String(result.content))}"` : '');
+    // title 让鼠标 hover 时显示完整内容（含智测评分理由）
+    let hoverText = '';
+    if (result.error) {
+      hoverText = result.error + (result.elapsed != null ? ` (${elapsedStr})` : '');
+    } else if (result.content) {
+      hoverText = String(result.content);
+    }
+    if (result.quiz_correct === true) hoverText += '\n✓ 智测正确';
+    else if (result.quiz_correct === false) hoverText += '\n✗ 智测错误' + (result.quiz_reason ? `: ${result.quiz_reason}` : '');
+    const titleAttr = hoverText ? `title="${esc(hoverText)}"` : '';
     const isRunning = busySet.has(name);
     const retestBtns = isRunning
       ? `<button class="lk-stop" disabled>已完成</button>`

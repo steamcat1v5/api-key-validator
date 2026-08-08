@@ -397,9 +397,10 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
     if extra_headers:
         headers.update(extra_headers)
-    # 智力测试题目比 hi 长，max_tokens 给足 500 让模型有空间回答
-    max_tokens = 500 if prompt_text != "hi" else 50
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt_text}], "max_tokens": max_tokens}
+    # 智力测试题目比 hi 长，智测时不限制 max_tokens 让模型完整回答
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt_text}]}
+    if prompt_text == "hi":
+        payload["max_tokens"] = 50
     if stream:
         payload["stream"] = True
 
@@ -513,7 +514,8 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": "codex_cli_rs/0.18.0"}
     if extra_headers:
         headers.update(extra_headers)
-    max_tokens = 500 if prompt_text != "hi" else 50
+    # 智测时给足 max_tokens 让模型完整回答（Anthropic 协议必须传 max_tokens）
+    max_tokens = 4096 if prompt_text != "hi" else 50
     payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt_text}]}
     if stream:
         payload["stream"] = True
