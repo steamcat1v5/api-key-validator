@@ -1360,7 +1360,7 @@ async def handle_judge_batch(request):
                 return web.json_response({"results": [], "reason": f"不支持协议: {jtype}"}, status=400)
 
             content = result.get("content", "")
-            logger.info(f"[judge-batch] judge reply: {content[:500]}")
+            logger.info(f"[judge-batch] judge reply len={len(content)} repr={content[:500]!r}")
             if not content:
                 return web.json_response({"results": [], "reason": "裁判模型无回复", "elapsed": result.get("elapsed")})
 

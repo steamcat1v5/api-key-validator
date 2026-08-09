@@ -219,12 +219,14 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .validate-result .vr-row { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .validate-result .vr-label { font-size: 12px; color: var(--text2); margin-top: 8px; margin-bottom: 2px; }
 .validate-result .vr-content {
-  width: 100%; min-height: 60px; max-height: 300px;
+  width: 100%;
+  max-height: 3em; /* 约 2 行 (line-height 1.5 × 2 = 3em) */
+  overflow: hidden;
   background: var(--surface3); border: 1px solid var(--border); border-radius: 4px;
-  padding: 6px 10px; font-size: 13px; line-height: 1.5; color: var(--text);
+  padding: 4px 10px; font-size: 13px; line-height: 1.5; color: var(--text);
   font-family: 'JetBrains Mono', monospace;
-  resize: vertical; overflow-y: auto; word-break: break-all;
-  outline: none;
+  resize: none; outline: none; cursor: pointer;
+  white-space: pre-wrap; word-break: break-all;
 }
 .validate-result .vr-usage { font-size: 12px; color: var(--text2); margin-top: 6px; }
 
@@ -355,9 +357,10 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
   border: 1px solid var(--border, #333344);
   border-radius: 10px;
   width: 90vw; max-width: 700px;
-  max-height: 80vh;
+  max-height: 70vh;
   display: flex; flex-direction: column;
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  overflow: hidden;
 }
 .detail-modal-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -373,16 +376,17 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 }
 .detail-modal-close:hover { background: var(--surface2, #2a2a3a); }
 .detail-modal-text {
-  flex: 1; margin: 12px 16px;
+  margin: 12px 16px;
   background: var(--surface2, #2a2a3a);
   color: var(--text, #e0e0e0);
   border: 1px solid var(--border, #333344);
   border-radius: 6px;
-  resize: vertical;
-  min-height: 200px;
+  resize: none;
+  min-height: 100px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 13px; line-height: 1.5;
   padding: 10px;
+  overflow-y: auto;
 }
 </style>
 </head>
@@ -717,7 +721,7 @@ function renderDetail() {
           }
         }
         if (!contentToShow) return '';
-        return `<div class="vr-label">回复内容</div><textarea class="vr-content" readonly>${esc(contentToShow)}</textarea>${badge}`;
+        return `<div class="vr-label">回复内容</div><div class="vr-content" onclick="showDetailModalText(this)" data-full-text="${esc(contentToShow)}">${esc(contentToShow)}</div>${badge}`;
       })()}
       ${multiArea}
       <div class="vr-usage">
@@ -2307,10 +2311,25 @@ init();
 <script>
 function showDetailModal(td) {
   const text = td.getAttribute('data-full-text') || td.textContent || '';
+  _openDetailModal(text);
+}
+function showDetailModalText(el) {
+  const text = el.getAttribute('data-full-text') || el.textContent || '';
+  _openDetailModal(text);
+}
+function _openDetailModal(text) {
   const modal = document.getElementById('detailModal');
   const textArea = modal.querySelector('.detail-modal-text');
   textArea.value = text;
+  // 先清除固定高度让 textarea 自适应内容
+  textArea.style.height = 'auto';
   modal.classList.add('show');
+  // 计算自适应高度：内容所需高度 vs 70vh 上限
+  requestAnimationFrame(() => {
+    const scrollH = textArea.scrollHeight;
+    const maxH = window.innerHeight * 0.7 - 100; // 减去 header 和 padding 的余量
+    textArea.style.height = Math.min(scrollH, maxH) + 'px';
+  });
 }
 function closeDetailModal() {
   const modal = document.getElementById('detailModal');
