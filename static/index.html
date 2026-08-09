@@ -597,7 +597,7 @@ async function init() {
   // 恢复智力测试设置（必须在 pollRunningStatus 之前，
   // 否则补调裁判时 quizSelectedId/quizJudgeProvider 还没从 localStorage 恢复）
   loadQuizSetting();
-  for (const rname of runningNames) {
+  for (const [rname] of Object.entries(runningValidations)) {
     // 开始轮询已完成的结果
     pollRunningStatus(rname);
   }
