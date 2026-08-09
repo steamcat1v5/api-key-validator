@@ -1883,6 +1883,9 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
             if (finalMulti) {
               validateResults[name] = validateResults[name] || {};
               validateResults[name].multi_results = finalMulti;
+              // 同步更新顶层 content（单 key provider 的 renderDetail 从 r.content 取回复）
+              const latestContent = finalMulti.find(r => r.key_index === keyIndex && r.content);
+              if (latestContent) validateResults[name].content = latestContent.content;
               validateResults[name].status = data.status;
             }
             // 清理该 key 的 pending 状态
