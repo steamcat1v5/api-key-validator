@@ -907,6 +907,10 @@ async def handle_validate(request):
             result["key_index"] = key_idx
             result["key_preview"] = _key_preview(ak)
             write_provider_log(name, log)
+            # 智测模式下标记 quiz_correct='pending'——刷新页面后前端可据此补调裁判
+            if prompt_text != "hi":
+                result["quiz_correct"] = "pending"
+                result["quiz_reason"] = "pending"
             # 存入全局中间结果表，刷新页面后前端可取
             _completed_results[(name, key_idx)] = result
             # 立刻推给前端（SSE 连接可能已断开，推送失败不影响结果）

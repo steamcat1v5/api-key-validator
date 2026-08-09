@@ -1441,6 +1441,25 @@ async function pollRunningStatus(name) {
       } else {
         renderList();
       }
+      // 如果智测中有 key 还处于 pending 评分中（刷新前裁判未完成），
+      // 补调裁判——从 providersData 获取裁判和题目信息
+      const mr = validateResults[name]?.multi_results;
+      if (mr && mr.some(r => r.quiz_correct === 'pending' || r.quiz_reason === 'pending')) {
+        const pendingResults = mr.filter(r => r.quiz_correct === 'pending' || r.quiz_reason === 'pending');
+        // 当前选中的 provider 才补调（用户能看到）
+        if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name && pendingResults.length > 0) {
+          const quiz = getCurrentQuiz();
+          const judge = getJudgeProvider();
+          if (quiz && judge) {
+            // 只把 pending 的 key 发给裁判
+            const toJudge = pendingResults.filter(r => r.ok && r.content);
+            if (toJudge.length > 0) {
+              renderAll(); // 先确保显示 ⏳ 评分中
+              await quizBatchJudge(name, quiz, judge, toJudge);
+            }
+          }
+        }
+      }
       return;
     }
     // 把已完成的结果填入 liveKeyTableMap
