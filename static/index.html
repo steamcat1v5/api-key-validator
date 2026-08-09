@@ -526,11 +526,13 @@ async function init() {
       // 正在运行的 key 不放 results → 渲染为 pending 骨架
     }
     const startedAt = rinfo.started_at ? rinfo.started_at * 1000 : Date.now();
+    const keyStartedAtMap = rinfo.key_started_at || {};
     // 从后端的 quiz_key_indices 构造 pendingKeys
     const quizKeySet = new Set(rinfo.quiz_key_indices || []);
     const pendingKeys = {};
     for (const kidx of runningKeyIndices) {
-      pendingKeys[kidx] = { mode: quizKeySet.has(kidx) ? 'quiz' : 'verify', startedAt };
+      const keyTs = keyStartedAtMap[String(kidx)] ? keyStartedAtMap[String(kidx)] * 1000 : startedAt;
+      pendingKeys[kidx] = { mode: quizKeySet.has(kidx) ? 'quiz' : 'verify', startedAt: keyTs };
     }
     liveKeyTableMap[rname] = { keys: allKeys, results: resultsMap, startedAt, pendingKeys };
     // 启动秒钟 ticker

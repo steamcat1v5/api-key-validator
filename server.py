@@ -30,6 +30,8 @@ _completed_results = {}
 # 全局 dict: name -> 验证开始时间（unix 时间戳，秒）
 # 刷新页面后前端用这个恢复计时
 _validation_start_times = {}
+# per-key 启动时间，用于刷新恢复时每个 key 独立计时
+_key_start_times = {}
 
 # 全局 set: (name, key_index) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
 _running_quiz_keys = set()
@@ -645,8 +647,10 @@ async def handle_get_config(request):
                     "key_indices": [],
                     "quiz_key_indices": [],
                     "started_at": _validation_start_times.get(pname, time.time()),
+                    "key_started_at": {},
                 }
             running[pname]["key_indices"].append(kidx)
+            running[pname]["key_started_at"][str(kidx)] = _key_start_times.get((pname, kidx), _validation_start_times.get(pname, time.time()))
             if (pname, kidx) in _running_quiz_keys:
                 running[pname]["quiz_key_indices"].append(kidx)
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
@@ -959,6 +963,7 @@ async def handle_validate(request):
         for i, ak in enumerate(keys):
             # 单 key 重测时用原始 key_index 做映射
             real_idx = orig_key_index if orig_key_index is not None else i
+            _key_start_times[(name, real_idx)] = time.time()
             task = asyncio.create_task(validate_and_push(real_idx, ak))
             _running_tasks[(name, real_idx)] = task
             if prompt_text != "hi":
@@ -979,6 +984,9 @@ async def handle_validate(request):
             _completed_results.pop((name, real_idx), None)
         # 清理验证开始时间
         _validation_start_times.pop(name, None)
+        for i in range(len(keys)):
+            real_idx = orig_key_index if orig_key_index is not None else i
+            _key_start_times.pop((name, real_idx), None)
         # 按原 key_index 顺序汇总结果
         for item in done:
             if isinstance(item, BaseException):
