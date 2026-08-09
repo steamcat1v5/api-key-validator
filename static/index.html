@@ -530,7 +530,7 @@ async function init() {
     const quizKeySet = new Set(rinfo.quiz_key_indices || []);
     const pendingKeys = {};
     for (const kidx of runningKeyIndices) {
-      pendingKeys[kidx] = quizKeySet.has(kidx) ? 'quiz' : 'verify';
+      pendingKeys[kidx] = { mode: quizKeySet.has(kidx) ? 'quiz' : 'verify', startedAt };
     }
     liveKeyTableMap[rname] = { keys: allKeys, results: resultsMap, startedAt, pendingKeys };
     // 启动秒钟 ticker
@@ -1220,15 +1220,16 @@ function renderLiveKeyTableHTML(name) {
 
   // 测试中用 entry.keys 顺序（含未完成骨架），已结束用 multi 的固化结果
   const isPlaying = !!entry;
-  // pendingKeys: { keyIndex: 'verify' | 'quiz' } — 单 key 重测时区分验证/智测
+  // pendingKeys: { keyIndex: { mode: 'verify'|'quiz', startedAt: number } } — per-key 验证/智测 + 独立计时
   const pendingKeys = entry?.pendingKeys || {};
   // 全局 quizMode（批量验证时用），单 key 重测时从 pendingKeys 取
   const getPendingLabel = (keyIdx) => {
-    const mode = pendingKeys[keyIdx];
-    if (mode === 'quiz') return '🧠 智测中';
-    if (mode === 'verify') return '🔍 验证中';
+    const pk = pendingKeys[keyIdx];
+    if (pk?.mode === 'quiz') return '🧠 智测中';
+    if (pk?.mode === 'verify') return '🔍 验证中';
     return entry?.quizMode ? '🧠 智测中' : '🔍 验证中';
   };
+  const getKeyStartedAt = (keyIdx) => pendingKeys[keyIdx]?.startedAt || entry?.startedAt || Date.now();
   const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
   const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
   const total = keys.length;
@@ -1247,10 +1248,11 @@ function renderLiveKeyTableHTML(name) {
     const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
     if (!result) {
       // 骨架行（只有测试中才看到）— 状态文本由 lk-pending-ticker 每秒更新秒数
-      // 初值在这里直接算出，避免 renderDetail 重新渲染后短暂显示「0s」错值
-      const elapsedSec = Math.max(0, Math.floor((Date.now() - (entry?.startedAt || Date.now())) / 1000));
+      const keyStartedAt = getKeyStartedAt(k.key_index);
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - keyStartedAt) / 1000));
       const label = getPendingLabel(k.key_index);
-      const opsLabel = pendingKeys[k.key_index] === 'quiz' ? '智测中' : (pendingKeys[k.key_index] === 'verify' ? '验证中' : (entry?.quizMode ? '智测中' : '验证中'));
+      const pkMode = pendingKeys[k.key_index]?.mode;
+      const opsLabel = pkMode === 'quiz' ? '智测中' : (pkMode === 'verify' ? '验证中' : (entry?.quizMode ? '智测中' : '验证中'));
       // 单 key 重测：有停止按钮可取消；已有结果但非 global busy：无停止按钮
       const isGlobalRunning = busySet.has(name);
       const stopBtn = isGlobalRunning
@@ -1258,7 +1260,7 @@ function renderLiveKeyTableHTML(name) {
         : `<button class="lk-stop" disabled>${opsLabel}</button>`;
       return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
-        <td class="lk-status pending" data-started-at="${entry?.startedAt || Date.now()}" data-pending-label="${label}">${label}... ${elapsedSec}s</td>
+        <td class="lk-status pending" data-started-at="${keyStartedAt}" data-pending-label="${label}">${label}... ${elapsedSec}s</td>
         <td class="lk-elapsed">-</td>
         <td class="lk-detail"></td>
         <td class="lk-ops">${stopBtn}</td>
@@ -1712,7 +1714,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
     startedAt: liveKeyTableMap[name]?.startedAt || Date.now(),
     pendingKeys: { ...(liveKeyTableMap[name]?.pendingKeys || {}) },
   };
-  liveKeyTableMap[name].pendingKeys[keyIndex] = quizMode ? 'quiz' : 'verify';
+  liveKeyTableMap[name].pendingKeys[keyIndex] = { mode: quizMode ? 'quiz' : 'verify', startedAt: Date.now() };
   // 渲染表格
   if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name) {
     renderDetail();
