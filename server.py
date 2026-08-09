@@ -185,13 +185,13 @@ def get_provider_last_status(provider_name):
                     choices = resp_json.get("choices", [])
                     if choices:
                         msg = choices[0].get("message", {})
-                        content = (msg.get("content") or "")[:80] or None
+                        content = msg.get("content") or None
                     # Anthropic 格式: content[0].text
                     if not content:
                         content_blocks = resp_json.get("content", [])
                         if isinstance(content_blocks, list) and content_blocks:
                             text = content_blocks[0].get("text", "")
-                            content = (text or "")[:80] or None
+                            content = text or None
                     # usage
                     u = resp_json.get("usage")
                     if u:
@@ -449,7 +449,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                 return {
                     "ok": True, "status": "available", "model": model,
                     "stream": True, "usage": usage,
-                    "content": collected_content[:80] if collected_content else "",
+                    "content": collected_content if collected_content else "",
                     "elapsed": ttft if ttft else elapsed,  # 优先用 TTFT
                     "ttft": ttft,
                     "log": log,
@@ -478,7 +478,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
                         # 部分网关(如 Cline) content 为空时回复在 reasoning 字段
                         if not content:
                             content = msg.get("reasoning", "") or msg.get("reasoning_content", "")
-                        content = content[:80] if content else ""
+                        content = content if content else ""
                     return {
                         "ok": True, "status": "available", "model": model,
                         "stream": False, "usage": usage, "content": content, "elapsed": elapsed,
@@ -570,7 +570,7 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
                 return {
                     "ok": True, "status": "available", "model": model,
                     "stream": True, "usage": usage,
-                    "content": collected_text[:80] if collected_text else "",
+                    "content": collected_text if collected_text else "",
                     "elapsed": ttft if ttft else elapsed,
                     "ttft": ttft,
                     "log": log,
@@ -594,7 +594,7 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
                     content = ""
                     content_arr = body_json.get("content", [])
                     if content_arr:
-                        content = content_arr[0].get("text", "")[:80]
+                        content = content_arr[0].get("text", "")
                     return {"ok": True, "status": "available", "model": model, "usage": usage, "content": content, "elapsed": elapsed, "log": log}
                 elif status == 401:
                     return {"ok": False, "status": "auth_error", "model": model, "elapsed": elapsed, "error": "HTTP 401 Unauthorized", "log": log}
