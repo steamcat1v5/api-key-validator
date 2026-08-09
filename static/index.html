@@ -218,7 +218,14 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 }
 .validate-result .vr-row { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .validate-result .vr-label { font-size: 12px; color: var(--text2); margin-top: 8px; margin-bottom: 2px; }
-.validate-result .vr-content { background: var(--surface3); border-radius: 4px; padding: 6px 10px; font-size: 13px; color: var(--text); max-height: 120px; overflow-y: auto; word-break: break-all; }
+.validate-result .vr-content {
+  width: 100%; min-height: 60px; max-height: 300px;
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 10px; font-size: 13px; line-height: 1.5; color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  resize: vertical; overflow-y: auto; word-break: break-all;
+  outline: none;
+}
 .validate-result .vr-usage { font-size: 12px; color: var(--text2); margin-top: 6px; }
 
 /* ─── 测试中实时 Key 表格 ─── */
@@ -332,6 +339,51 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 768px) { .main-layout { flex-direction: column; } .list-panel { width: 100%; } }
+
+/* 详情 Modal */
+.detail-modal {
+  display: none;
+  position: fixed; top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10000;
+  align-items: center; justify-content: center;
+}
+.detail-modal.show { display: flex; }
+.detail-modal-content {
+  background: var(--surface, #1e1e2e);
+  border: 1px solid var(--border, #333344);
+  border-radius: 10px;
+  width: 90vw; max-width: 700px;
+  max-height: 80vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.detail-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--border, #333344);
+}
+.detail-modal-title {
+  font-weight: 600; font-size: 15px; color: var(--text, #e0e0e0);
+}
+.detail-modal-close {
+  background: none; border: none; font-size: 18px;
+  color: var(--text2, #888); cursor: pointer; padding: 0 8px;
+  border-radius: 6px;
+}
+.detail-modal-close:hover { background: var(--surface2, #2a2a3a); }
+.detail-modal-text {
+  flex: 1; margin: 12px 16px;
+  background: var(--surface2, #2a2a3a);
+  color: var(--text, #e0e0e0);
+  border: 1px solid var(--border, #333344);
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 200px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; line-height: 1.5;
+  padding: 10px;
+}
 </style>
 </head>
 <body>
@@ -644,7 +696,7 @@ function renderDetail() {
         } else if (qr.quiz_correct == null && qr.quiz_reason) {
           badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span></div>`;
         }
-        return `<div class="vr-label">回复内容</div><div class="vr-content">${esc(r.content)}</div>${badge}`;
+        return `<div class="vr-label">回复内容</div><textarea class="vr-content" readonly>${esc(r.content)}</textarea>${badge}`;
       })() : ''}
       ${multiArea}
       <div class="vr-usage">
@@ -1309,11 +1361,13 @@ function renderLiveKeyTableHTML(name) {
       ? `<button class="lk-stop" disabled>已完成</button>`
       : `<button class="lk-retest" title="验证" onclick="validateSingleKey('${escName}', ${k.key_index}, false)">🔍</button>`
         + `<button class="lk-retest" title="智测" onclick="validateSingleKey('${escName}', ${k.key_index}, true)" style="margin-left:2px">🧠</button>`;
+    const hasDetail = (result.error || result.content || (result.quiz_correct != null));
+    const detailClickAttr = hasDetail ? `onclick="showDetailModal(this)" data-full-text="${esc(hoverText)}"` : '';
     return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
       <td class="lk-key" title="${esc(k.key_preview || '')}">${esc(k.key_preview || '')}</td>
       <td class="lk-status ${statusVal}">${statusLabel}</td>
       <td class="lk-elapsed">${elapsedStr}</td>
-      <td class="lk-detail" ${titleAttr}>${detailStr}</td>
+      <td class="lk-detail" style="cursor:pointer" ${detailClickAttr}>${detailStr}</td>
       <td class="lk-ops">${retestBtns}</td>
     </tr>`;
   }).join('');
@@ -1639,6 +1693,15 @@ async function validateSingle(name, quizMode = false) {
             // 优先使用后端汇总的 multi_results，避免前端漏掉 cancelled 行
             // 单 key 场景后端可能不返回 multi_results，用前端收集的 multiResults 兜底
             const finalMulti = data.multi_results || (multiResults.length >= 1 ? multiResults : null);
+            // 智力测试：在调裁判前，先把所有成功应答的 key 标为「评分中」
+            if (quizMode && finalMulti) {
+              for (const r of finalMulti) {
+                if (r.ok && r.content) {
+                  r.quiz_correct = 'pending';
+                  r.quiz_reason = 'pending';
+                }
+              }
+            }
             const firstResult = (finalMulti && finalMulti[0]) || multiResults[0];
             validateResults[name] = {
               status: data.status, model: firstResult?.model,
@@ -1759,6 +1822,16 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
           } else if (eventType === 'done') {
             // 单 key 重测完成：更新 validateResults 的多 key 表格
             const finalMulti = data.multi_results || (singleResult ? [singleResult] : null);
+            if (quizMode && finalMulti) {
+              // 智力测试：在调裁判前，先把所有成功应答的 key 标为「评分中」
+              // 这样 renderAll 后表格显示 ⏳ 评分中，而非空白结果
+              for (const r of finalMulti) {
+                if (r.ok && r.content) {
+                  r.quiz_correct = 'pending';
+                  r.quiz_reason = 'pending';
+                }
+              }
+            }
             if (finalMulti) {
               validateResults[name] = validateResults[name] || {};
               validateResults[name].multi_results = finalMulti;
@@ -2193,5 +2266,34 @@ function showToast(msg, type='success') {
 
 init();
 </script>
+
+<!-- 详情 Modal：点击详情列后弹出完整应答文本 -->
+<div id="detailModal" class="detail-modal" onclick="if(event.target===this)closeDetailModal()">
+  <div class="detail-modal-content">
+    <div class="detail-modal-header">
+      <span class="detail-modal-title">详情</span>
+      <button class="detail-modal-close" onclick="closeDetailModal()">✕</button>
+    </div>
+    <textarea class="detail-modal-text" readonly></textarea>
+  </div>
+</div>
+
+<script>
+function showDetailModal(td) {
+  const text = td.getAttribute('data-full-text') || td.textContent || '';
+  const modal = document.getElementById('detailModal');
+  const textArea = modal.querySelector('.detail-modal-text');
+  textArea.value = text;
+  modal.classList.add('show');
+}
+function closeDetailModal() {
+  const modal = document.getElementById('detailModal');
+  modal.classList.remove('show');
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDetailModal();
+});
+</script>
+
 </body>
 </html>

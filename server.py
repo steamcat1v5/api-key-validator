@@ -1307,6 +1307,7 @@ async def handle_judge_batch(request):
     standard_answer = body.get("standard_answer", "")
     answers = body.get("answers", [])
     judge = body.get("judge", {})
+    logger.info(f"[judge-batch] judge={judge.get('name')}/{judge.get('model')} answers={len(answers)} keys={[a.get('key_index') for a in answers]}")
 
     if not judge or not judge.get("base_url") or not judge.get("api_keys"):
         return web.json_response({"results": [], "reason": "裁判 provider 未配置"}, status=400)
@@ -1359,17 +1360,21 @@ async def handle_judge_batch(request):
                 return web.json_response({"results": [], "reason": f"不支持协议: {jtype}"}, status=400)
 
             content = result.get("content", "")
+            logger.info(f"[judge-batch] judge reply: {content[:500]}")
             if not content:
                 return web.json_response({"results": [], "reason": "裁判模型无回复", "elapsed": result.get("elapsed")})
 
             # 解析裁判回复里的 JSON 数组
             import re
+            # 先去掉 markdown 代码块包裹（```json ... ```），裁判可能会加这个
+            md_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+            content_stripped = md_match.group(1) if md_match else content
             # 优先找最外层的 [ ... ]（裁判可能输出额外解释文本）
             # 用宽松匹配：从第一个 [ 到最后一个 ]
-            first = content.find('[')
-            last = content.rfind(']')
+            first = content_stripped.find('[')
+            last = content_stripped.rfind(']')
             if first >= 0 and last > first:
-                json_str = content[first:last+1]
+                json_str = content_stripped[first:last+1]
                 try:
                     parsed = json.loads(json_str)
                     results = []
@@ -1381,6 +1386,7 @@ async def handle_judge_batch(request):
                                 "reason": str(item.get("reason", ""))[:200]  # 截断原因长度
                             })
                     if results:
+                        logger.info(f"[judge-batch] parsed {len(results)} results: {results}")
                         return web.json_response({
                             "results": results,
                             "judge_raw": content[:2000],
@@ -1390,7 +1396,7 @@ async def handle_judge_batch(request):
                     pass
 
             # 启发式 fallback：尝试单条提取 correct 键
-            single_match = re.search(r'\{[^}]*"correct"[^}]*\}', content, re.DOTALL)
+            single_match = re.search(r'\{[^}]*"correct"[^}]*\}', content_stripped, re.DOTALL)
             if single_match:
                 try:
                     parsed = json.loads(single_match.group())
@@ -1408,6 +1414,7 @@ async def handle_judge_batch(request):
                 except json.JSONDecodeError:
                     pass
 
+            logger.warning(f"[judge-batch] failed to parse JSON: {content[:300]}")
             return web.json_response({
                 "results": [],
                 "reason": f"裁判回复无法解析 JSON 数组: {content[:300]}",
