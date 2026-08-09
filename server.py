@@ -1554,8 +1554,17 @@ async def handle_save_quiz_result(request):
                 mrs = multi_results
                 ls["multi_results"] = multi_results
             if mrs:
-                mrs[0]["quiz_correct"] = quiz_correct
-                mrs[0]["quiz_reason"] = quiz_reason
+                # 按 key_index 更新对应 key 的 quiz 状态，而非只写 mrs[0]
+                if multi_results:
+                    for mr_item in multi_results:
+                        ki = mr_item.get("key_index")
+                        target = next((m for m in mrs if m.get("key_index") == ki), None)
+                        if target:
+                            target["quiz_correct"] = mr_item.get("quiz_correct")
+                            target["quiz_reason"] = mr_item.get("quiz_reason", "")
+                else:
+                    mrs[0]["quiz_correct"] = quiz_correct
+                    mrs[0]["quiz_reason"] = quiz_reason
             ls["quiz_score_summary"] = quiz_score_summary
             p["last_status"] = ls
             save_config(cfg)
