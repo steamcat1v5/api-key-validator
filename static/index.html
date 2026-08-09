@@ -683,21 +683,42 @@ function renderDetail() {
         ${r.model ? `<span style="font-size:12px;color:var(--text2);margin-left:4px">${esc(r.model)}</span>` : ''}
         ${r.error && (!r.multi_results || r.multi_results.length <= 1) ? `<span style="font-size:12px;color:var(--red);margin-left:4px">${esc(r.error)}</span>` : ''}
       </div>
-      ${r.content && (!r.multi_results || r.multi_results.length <= 1) ? (() => {
-        // 单 key 或无 key 场景：在回复内容下方显示评分结果（✓对/✗错/评分中）
+      ${(() => {
+        // 智测 badge：多 key 场景也显示，取第一个有多智测状态的 key
         let badge = '';
-        const qr = (r.multi_results && r.multi_results[0]) ? r.multi_results[0] : r;
-        if (qr.quiz_correct === true) {
-          badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span>` : ''}</div>`;
-        } else if (qr.quiz_correct === false) {
-          badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span>` : ''}</div>`;
-        } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
-          badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
-        } else if (qr.quiz_correct == null && qr.quiz_reason) {
-          badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(qr.quiz_reason.slice(0, 120))}</span></div>`;
+        let contentToShow = r.content || '';
+        if (r.multi_results && r.multi_results.length > 1) {
+          // 多 key：找最近被智测的 key（有 quiz_correct/quiz_reason 字段的）
+          const quizKey = r.multi_results.find(m => m.quiz_correct != null || m.quiz_reason);
+          if (quizKey) {
+            contentToShow = quizKey.content || contentToShow;
+            const qr = quizKey;
+            if (qr.quiz_correct === true) {
+              badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+            } else if (qr.quiz_correct === false) {
+              badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--red);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+            } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
+              badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
+            } else if (qr.quiz_correct == null && qr.quiz_reason) {
+              badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span></div>`;
+            }
+          }
+        } else if (r.content) {
+          // 单 key 或无 key 场景
+          const qr = (r.multi_results && r.multi_results[0]) ? r.multi_results[0] : r;
+          if (qr.quiz_correct === true) {
+            badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+          } else if (qr.quiz_correct === false) {
+            badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--red);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+          } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
+            badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
+          } else if (qr.quiz_correct == null && qr.quiz_reason) {
+            badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span></div>`;
+          }
         }
-        return `<div class="vr-label">回复内容</div><textarea class="vr-content" readonly>${esc(r.content)}</textarea>${badge}`;
-      })() : ''}
+        if (!contentToShow) return '';
+        return `<div class="vr-label">回复内容</div><textarea class="vr-content" readonly>${esc(contentToShow)}</textarea>${badge}`;
+      })()}
       ${multiArea}
       <div class="vr-usage">
         ${r.usage && (r.usage.prompt_tokens || r.usage.completion_tokens) ? `📊 tokens: prompt=${r.usage.prompt_tokens||'?'} completion=${r.usage.completion_tokens||'?'}` : ''}
@@ -1823,10 +1844,11 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
             // 单 key 重测完成：更新 validateResults 的多 key 表格
             const finalMulti = data.multi_results || (singleResult ? [singleResult] : null);
             if (quizMode && finalMulti) {
-              // 智力测试：在调裁判前，先把所有成功应答的 key 标为「评分中」
-              // 这样 renderAll 后表格显示 ⏳ 评分中，而非空白结果
+              // 智力测试：在调裁判前，先把正在智测的那个 key 标为「评分中」
+              // 注意：单 key 重测时后端返回的 multi_results 包含所有 key 的历史结果，
+              // 但只有当前 keyIndex 是新智测的，不应把其他 key 也发给裁判
               for (const r of finalMulti) {
-                if (r.ok && r.content) {
+                if (r.key_index === keyIndex && r.ok && r.content) {
                   r.quiz_correct = 'pending';
                   r.quiz_reason = 'pending';
                 }
@@ -1847,7 +1869,11 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
             }
             renderAll();
             if (quizMode && finalMulti) {
-              await quizBatchJudge(name, quiz, judge, finalMulti);
+              // 单 key 智测：只把当前 key 的结果发给裁判，而非全部 19 个
+              const singleQuizMulti = finalMulti.filter(r => r.key_index === keyIndex && r.ok && r.content);
+              if (singleQuizMulti.length > 0) {
+                await quizBatchJudge(name, quiz, judge, singleQuizMulti);
+              }
             }
           } else if (eventType === 'error') {
             if (liveKeyTableMap[name]?.pendingKeys) {
