@@ -284,8 +284,28 @@ def load_config():
 
 
 def save_config(cfg):
-    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失"""
-    import tempfile, os
+    """原子写入配置文件：先写临时文件再 rename，防止写入一半崩溃导致配置丢失。
+    写入前自动备份当前版本，最多保留 10 个备份。"""
+    import tempfile, os, glob, time, shutil
+    # ---- 自动备份 ----
+    try:
+        if CONFIG_PATH.exists():
+            bak_dir = CONFIG_PATH.parent / "backups"
+            bak_dir.mkdir(exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            bak_path = bak_dir / f"config_{ts}.yml"
+            shutil.copy2(str(CONFIG_PATH), str(bak_path))
+            # 清理旧备份，只保留最近 10 个
+            baks = sorted(glob.glob(str(bak_dir / "config_*.yml")))
+            if len(baks) > 10:
+                for old in baks[:-10]:
+                    try:
+                        os.remove(old)
+                    except Exception:
+                        pass
+    except Exception:
+        pass  # 备份失败不应阻断正常保存
+    # ---- 原子写入 ----
     tmp_fd = None
     tmp_path = None
     try:
@@ -299,7 +319,6 @@ def save_config(cfg):
             os.fsync(f.fileno())
         os.replace(tmp_path, str(CONFIG_PATH))
     except Exception as e:
-        # 如果原子写入失败，不要删临时文件（便于排查），但确保不残留
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
