@@ -1676,20 +1676,18 @@ async function quizBatchJudge(providerName, quiz, judge, multiResults) {
   //    没结果的 key 保留 ⏳ 评分中 / 评分失败 状态
   let correctCnt = 0, wrongCnt = 0;
   if (Array.isArray(judgeData.results)) {
-    for (const jr of judgeData.results) {
-      const target = multiResults.find(r => r.key_index === jr.key_index);
-      if (target) {
-        target.quiz_correct = !!jr.correct;
-        target.quiz_reason = jr.reason || '';
-        if (jr.correct) correctCnt++; else wrongCnt++;
-      }
+    // 按提交顺序回填（裁判可能返回错误的 key_index，不信任它）
+    for (let i = 0; i < judgeData.results.length && i < okResults.length; i++) {
+      const jr = judgeData.results[i];
+      const target = okResults[i];  // 按顺序对应
+      target.quiz_correct = !!jr.correct;
+      target.quiz_reason = jr.reason || '';
+      if (jr.correct) correctCnt++; else wrongCnt++;
     }
     // 缺失的 key 标评分失败
-    for (const r of okResults) {
-      if (!judgeData.results.find(x => x.key_index === r.key_index)) {
-        r.quiz_correct = null;
-        r.quiz_reason = '裁判未列出此 key';
-      }
+    for (let i = judgeData.results.length; i < okResults.length; i++) {
+      okResults[i].quiz_correct = null;
+      okResults[i].quiz_reason = '裁判未列出此 key';
     }
   } else {
     // 裁判失败：所有 OK 行标失败
