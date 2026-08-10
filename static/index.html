@@ -515,6 +515,8 @@ const QUIZ_BANK = [
 // 智力测试状态（localStorage 持久化）
 let quizSelectedId = '';      // 选中的题目 id
 let lastQuizKeyIdx = -1;     // 最近智测的 key_index（用于 renderDetail 优先显示）
+let lastResultKeyIdx = -1;   // 最近完成操作的 key_index（验证或智测，renderDetail 优先取此 key）
+let lastResultIsQuiz = false; // 最近操作是否为智测
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
 // ─── 快照 & 脏检测 ─────────────────
@@ -716,25 +718,33 @@ function renderDetail() {
         let badge = '';
         let contentToShow = r.content || '';
         if (r.multi_results && r.multi_results.length > 1) {
-          // 多 key：优先取最近智测的 key（lastQuizKeyIdx），否则取第一个有 quiz 状态的
-          let quizKey = null;
-          if (lastQuizKeyIdx >= 0) {
-            quizKey = r.multi_results.find(m => m.key_index === lastQuizKeyIdx && (m.quiz_correct != null || m.quiz_reason));
+          // 多 key：优先取最近操作的 key（lastResultKeyIdx），其次取最近智测的 key
+          let targetKey = null;
+          if (lastResultKeyIdx >= 0) {
+            targetKey = r.multi_results.find(m => m.key_index === lastResultKeyIdx);
           }
-          if (!quizKey) {
-            quizKey = r.multi_results.find(m => m.quiz_correct != null || m.quiz_reason);
+          if (!targetKey && lastQuizKeyIdx >= 0) {
+            targetKey = r.multi_results.find(m => m.key_index === lastQuizKeyIdx);
           }
-          if (quizKey) {
-            contentToShow = quizKey.content || contentToShow;
-            const qr = quizKey;
-            if (qr.quiz_correct === true) {
-              badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
-            } else if (qr.quiz_correct === false) {
-              badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--red);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
-            } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
-              badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
-            } else if (qr.quiz_correct == null && qr.quiz_reason) {
-              badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span></div>`;
+          if (!targetKey) {
+            // fallback：取第一个有 quiz 状态的 key
+            targetKey = r.multi_results.find(m => m.quiz_correct != null || m.quiz_reason);
+          }
+          if (targetKey) {
+            contentToShow = targetKey.content || contentToShow;
+            const qr = targetKey;
+            // 只在最近操作是智测、或该 key 本身有 quiz 状态时才显示 badge
+            const showQuizBadge = lastResultIsQuiz || (qr.quiz_correct != null || qr.quiz_reason);
+            if (showQuizBadge) {
+              if (qr.quiz_correct === true) {
+                badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+              } else if (qr.quiz_correct === false) {
+                badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(231,76,60,.1);border-radius:6px"><span style="color:var(--red);font-weight:600;font-size:14px">✗ 回答错误</span>${qr.quiz_reason ? ` <span style="color:var(--red);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
+              } else if (qr.quiz_correct === 'pending' || qr.quiz_reason === 'pending') {
+                badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--surface2);border-radius:6px"><span style="color:var(--text2)">⏳ 评分中...</span></div>`;
+              } else if (qr.quiz_correct == null && qr.quiz_reason) {
+                badge = `<div style="margin-top:8px;padding:6px 12px;background:rgba(243,156,18,.1);border-radius:6px"><span style="color:var(--orange);font-weight:600;font-size:14px">⚠ 评分失败</span> <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span></div>`;
+              }
             }
           }
         } else if (r.content) {
@@ -1490,6 +1500,8 @@ async function pollRunningStatus(name) {
               const firstPending = toJudge[0];
               if (firstPending?.key_index != null) {
                 lastQuizKeyIdx = firstPending.key_index;
+                lastResultKeyIdx = firstPending.key_index;
+                lastResultIsQuiz = true;
                 try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(lastQuizKeyIdx)); } catch(e) {}
               }
               renderAll(); // 先确保显示 ⏳ 评分中
@@ -1819,7 +1831,12 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   const judge = quizMode ? getJudgeProvider() : null;
   if (quizMode) {
     lastQuizKeyIdx = keyIndex;
+    lastResultKeyIdx = keyIndex;
+    lastResultIsQuiz = true;
     try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(keyIndex)); } catch(e) {}
+  } else {
+    lastResultKeyIdx = keyIndex;
+    lastResultIsQuiz = false;
   }
   if (quizMode && (!quiz || !judge)) {
     showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
@@ -2246,8 +2263,17 @@ function restoreLastQuizKeyIdx() {
     if (p) {
       const v = localStorage.getItem(`lastQuizKeyIdx_${p.name}`);
       lastQuizKeyIdx = v != null ? parseInt(v) : -1;
+      // 刷新/切 provider 时，恢复最近操作的 key
+      // 如果该 key 有 quiz 状态则视为智测，否则视为验证
+      lastResultKeyIdx = lastQuizKeyIdx;
+      if (lastResultKeyIdx >= 0 && p.last_status?.multi_results) {
+        const mr = p.last_status.multi_results.find(m => m.key_index === lastResultKeyIdx);
+        lastResultIsQuiz = !!(mr && (mr.quiz_correct != null || mr.quiz_reason));
+      } else {
+        lastResultIsQuiz = false;
+      }
     }
-  } catch(e) { lastQuizKeyIdx = -1; }
+  } catch(e) { lastQuizKeyIdx = -1; lastResultKeyIdx = -1; lastResultIsQuiz = false; }
 }
 
 function toggleQuizMenu() {
