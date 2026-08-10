@@ -1028,6 +1028,8 @@ function onUrlChange(idx, value) {
 // ─── 操作 ─────────────────
 async function selectProvider(i) {
   selectedIdx = i;
+  // 切换 provider 时恢复该 provider 的 lastQuizKeyIdx
+  restoreLastQuizKeyIdx();
   renderAll();
   renderLog(); // 立即显示当前 provider 的日志（可能是空）
   // 持久化选中索引
@@ -1484,6 +1486,12 @@ async function pollRunningStatus(name) {
             // 只把 pending 的 key 发给裁判
             const toJudge = pendingResults.filter(r => r.ok && r.content);
             if (toJudge.length > 0) {
+              // 恢复 lastQuizKeyIdx（取第一个 pending 的 key）
+              const firstPending = toJudge[0];
+              if (firstPending?.key_index != null) {
+                lastQuizKeyIdx = firstPending.key_index;
+                try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(lastQuizKeyIdx)); } catch(e) {}
+              }
               renderAll(); // 先确保显示 ⏳ 评分中
               await quizBatchJudge(name, quiz, judge, toJudge);
             }
@@ -1809,7 +1817,10 @@ async function validateSingle(name, quizMode = false) {
 async function validateSingleKey(name, keyIndex, quizMode = false) {
   const quiz = quizMode ? getCurrentQuiz() : null;
   const judge = quizMode ? getJudgeProvider() : null;
-  if (quizMode) lastQuizKeyIdx = keyIndex;
+  if (quizMode) {
+    lastQuizKeyIdx = keyIndex;
+    try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(keyIndex)); } catch(e) {}
+  }
   if (quizMode && (!quiz || !judge)) {
     showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
     return;
@@ -2225,7 +2236,18 @@ function loadQuizSetting() {
     quizSelectedId = localStorage.getItem('quizSelectedId') || '';
     quizJudgeProvider = localStorage.getItem('quizJudgeProvider') || '';
   } catch(e) {}
+  // 恢复最近智测的 key_index（按 provider 分别存储）
+  restoreLastQuizKeyIdx();
   updateQuizUI();
+}
+function restoreLastQuizKeyIdx() {
+  try {
+    const p = providersData[selectedIdx];
+    if (p) {
+      const v = localStorage.getItem(`lastQuizKeyIdx_${p.name}`);
+      lastQuizKeyIdx = v != null ? parseInt(v) : -1;
+    }
+  } catch(e) { lastQuizKeyIdx = -1; }
 }
 
 function toggleQuizMenu() {
