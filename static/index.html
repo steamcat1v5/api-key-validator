@@ -514,6 +514,7 @@ const QUIZ_BANK = [
 
 // 智力测试状态（localStorage 持久化）
 let quizSelectedId = '';      // 选中的题目 id
+let lastQuizKeyIdx = -1;     // 最近智测的 key_index（用于 renderDetail 优先显示）
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
 // ─── 快照 & 脏检测 ─────────────────
@@ -715,8 +716,14 @@ function renderDetail() {
         let badge = '';
         let contentToShow = r.content || '';
         if (r.multi_results && r.multi_results.length > 1) {
-          // 多 key：找最近被智测的 key（有 quiz_correct/quiz_reason 字段的）
-          const quizKey = r.multi_results.find(m => m.quiz_correct != null || m.quiz_reason);
+          // 多 key：优先取最近智测的 key（lastQuizKeyIdx），否则取第一个有 quiz 状态的
+          let quizKey = null;
+          if (lastQuizKeyIdx >= 0) {
+            quizKey = r.multi_results.find(m => m.key_index === lastQuizKeyIdx && (m.quiz_correct != null || m.quiz_reason));
+          }
+          if (!quizKey) {
+            quizKey = r.multi_results.find(m => m.quiz_correct != null || m.quiz_reason);
+          }
           if (quizKey) {
             contentToShow = quizKey.content || contentToShow;
             const qr = quizKey;
@@ -1802,6 +1809,7 @@ async function validateSingle(name, quizMode = false) {
 async function validateSingleKey(name, keyIndex, quizMode = false) {
   const quiz = quizMode ? getCurrentQuiz() : null;
   const judge = quizMode ? getJudgeProvider() : null;
+  if (quizMode) lastQuizKeyIdx = keyIndex;
   if (quizMode && (!quiz || !judge)) {
     showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
     return;
