@@ -1830,13 +1830,8 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   const quiz = quizMode ? getCurrentQuiz() : null;
   const judge = quizMode ? getJudgeProvider() : null;
   if (quizMode) {
-    lastQuizKeyIdx = keyIndex;
-    lastResultKeyIdx = keyIndex;
-    lastResultIsQuiz = true;
-    try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(keyIndex)); } catch(e) {}
-  } else {
-    lastResultKeyIdx = keyIndex;
-    lastResultIsQuiz = false;
+    // 注意：不在此处设置 lastResultKeyIdx，等 done 事件结果回来后再设
+    // 否则点击智测的瞬间 renderAll 会用旧验证结果更新回复内容
   }
   if (quizMode && (!quiz || !judge)) {
     showToast('⚠️ 请先在「🧠 智力测试」菜单选择题目和裁判 provider', 'error');
@@ -1923,6 +1918,13 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
               updateLiveKeyRowQuizPending(name, data.key_index);
             }
           } else if (eventType === 'done') {
+            // 单 key 重测完成：更新 lastResultKeyIdx（结果回来后才设）
+            lastResultKeyIdx = keyIndex;
+            lastResultIsQuiz = quizMode;
+            if (quizMode) {
+              lastQuizKeyIdx = keyIndex;
+              try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(keyIndex)); } catch(e) {}
+            }
             // 单 key 重测完成：更新 validateResults 的多 key 表格
             const finalMulti = data.multi_results || (singleResult ? [singleResult] : null);
             if (quizMode && finalMulti) {
