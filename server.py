@@ -1086,6 +1086,11 @@ async def handle_validate(request):
                     existing[j] = new_result
                     replaced = True
                     break
+                # fallback: 旧数据没有 key_id，按 key_index 匹配
+                if not m.get("key_id") and orig_key_index is not None and m.get("key_index") == orig_key_index:
+                    existing[j] = new_result
+                    replaced = True
+                    break
             if not replaced:
                 # key_id 不在现有列表中（可能是新增的 key），追加到末尾
                 existing.append(new_result)
