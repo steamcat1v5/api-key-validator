@@ -285,8 +285,9 @@ def load_config():
             p.setdefault("timeout", 60)
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
+        cfg.setdefault("proxies", [])
         return cfg
-    return {"providers": [], "stream": False}
+    return {"providers": [], "stream": False, "proxies": []}
 
 
 def save_config(cfg, backup=False):
@@ -416,7 +417,7 @@ async def fetch_models_openai(session, base_url, api_key, provider_name, extra_h
         return {"ok": False, "error": str(e), "models": [], "log": log}
 
 
-async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None):
+async def validate_openai(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None, proxy=None):
     """OpenAI 协议: POST /v1/chat/completions
 
     prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
@@ -439,7 +440,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
 
     start = time.time()
     try:
-        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout), proxy=proxy) as resp:
             status = resp.status
             if stream and status == 200:
                 # 真正的流式读取：逐行接收，记录 TTFT 与总耗时
@@ -534,7 +535,7 @@ async def validate_openai(session, base_url, api_key, model, provider_name, stre
         return {"ok": False, "status": "error", "model": model, "error": err_msg, "elapsed": elapsed, "log": log}
 
 
-async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None):
+async def validate_anthropic(session, base_url, api_key, model, provider_name, stream=False, timeout=60, prompt_text="hi", extra_headers=None, proxy=None):
     """Anthropic 协议: POST /v1/messages
 
     prompt_text 默认 "hi"（连通性测试），智力测试时传题目内容。
@@ -555,7 +556,7 @@ async def validate_anthropic(session, base_url, api_key, model, provider_name, s
 
     start = time.time()
     try:
-        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout), proxy=proxy) as resp:
             status = resp.status
             if stream and status == 200:
                 # 真正的流式读取：逐行接收 SSE，记录 TTFT
@@ -683,7 +684,7 @@ async def handle_get_config(request):
             running[pname]["key_started_at"][kid] = _key_start_times.get((pname, kid), _validation_start_times.get(pname, time.time()))
             if (pname, kid) in _running_quiz_keys:
                 running[pname]["quiz_key_indices"].append(kid)
-    return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
+    return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running, "proxies": cfg.get("proxies", [])})
 
 
 async def handle_save_config(request):
@@ -745,7 +746,19 @@ async def handle_save_config(request):
             seen_names[name] = True
 
     try:
-        save_config({"providers": merged, "stream": body.get("stream", False), "selected_idx": body.get("selected_idx", -1)}, backup=True)
+        save_config({"providers": merged, "stream": body.get("stream", False), "selected_idx": body.get("selected_idx", -1), "proxies": body.get("proxies", [])}, backup=True)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def handle_save_proxies(request):
+    """保存代理列表到 config"""
+    try:
+        body = await request.json()
+        cfg = load_config()
+        cfg["proxies"] = body.get("proxies", [])
+        save_config(cfg)
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -870,6 +883,8 @@ async def handle_validate(request):
         ptype = ptype or provider.get("type", "openai")
         model = model or provider.get("selected_model", "")
         timeout = body.get("timeout") or provider.get("timeout", 60)
+        # 代理：前端传 proxy name（如 "socks5://user:pswd@host:port"），直连时为空
+        proxy_url = body.get("proxy") or None
         # extra_headers: 前端 body 优先（未保存的修改也能即时生效），fallback 到 config
         eh = body.get("extra_headers")
         provider["extra_headers"] = eh if eh is not None else provider.get("extra_headers", {})
@@ -877,6 +892,7 @@ async def handle_validate(request):
             api_keys = provider.get("api_keys", api_keys)
     else:
         timeout = body.get("timeout", 60)
+        proxy_url = body.get("proxy") or None
         # 未保存的新 provider：从请求体取 extra_headers
         provider = {"extra_headers": body.get("extra_headers", {})}
         # 不在 config 中且前端没传 model → 报错
@@ -938,9 +954,9 @@ async def handle_validate(request):
         try:
             eh = (provider or {}).get("extra_headers")
             if ptype == "openai":
-                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh)
+                result = await validate_openai(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh, proxy=proxy_url)
             elif ptype == "anthropic":
-                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh)
+                result = await validate_anthropic(session, base_url, ak, model, name, stream=stream, timeout=timeout, prompt_text=prompt_text, extra_headers=eh, proxy=proxy_url)
             else:
                 return None, None, None
             log = result.get("log", {})
@@ -1660,6 +1676,7 @@ async def handle_save_quiz_result(request):
 app.router.add_get("/static/{tail:.*}", handle_static)
 app.router.add_get("/api/config", handle_get_config)
 app.router.add_post("/api/config", handle_save_config)
+app.router.add_post("/api/save-proxies", handle_save_proxies)
 app.router.add_post("/api/fetch-models", handle_fetch_models)
 app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)

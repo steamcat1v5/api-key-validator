@@ -425,6 +425,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
     <button class="btn btn-save" onclick="saveConfig()">💾 保存全部</button>
     <button class="btn btn-fetch" onclick="fetchAllModels()">📡 批量获取模型</button>
     <button class="btn btn-primary" onclick="validateAll()">🔍 批量验证</button>
+    <button class="btn btn-secondary" onclick="showProxyModal()">🔗 代理</button>
     <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer">
       <input type="checkbox" id="chkStream" onchange="saveStreamSetting()"> stream
     </label>
@@ -488,6 +489,8 @@ function _simpleHash(str) {
   return (h >>> 0).toString(16).padStart(8, '0').slice(0, 8);
 }
 let providersData = [];
+let proxiesList = []; // 代理列表 [{name, url}]
+let selectedProxy = ''; // 当前选中的代理 URL（空=直连）
 let selectedIdx = -1;
 let logEntriesByProvider = {}; // name -> [entries]
 let logTabStates = {}; // entryId -> 'request' | 'response'
@@ -566,6 +569,7 @@ async function init() {
   const data = await resp.json();
   if (chk && data.stream) chk.checked = true;
   providersData = data.providers || [];
+  proxiesList = data.proxies || [];
   // 从 config 恢复每个 provider 的最近验证状态到 validateResults
   providersData.forEach(p => {
     if (p.last_status && typeof p.last_status === 'object') {
@@ -858,6 +862,10 @@ function renderDetail() {
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}', true)" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''} style="${quizSelectedId ? 'background:var(--accent2)' : ''}">🧠 智测</button>
+      <select id="proxySelect_${selectedIdx}" style="width:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="selectedProxy=this.value;renderDetail()">
+        <option value="" ${!selectedProxy?'selected':''}>🔌 直连</option>
+        ${proxiesList.map(px => `<option value="${esc(px.url)}" ${selectedProxy===px.url?'selected':''}>🔗 ${esc(px.name||px.url.slice(0,30))}</option>`).join('')}
+      </select>
       <select style="width:auto;margin-left:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||60)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
@@ -1255,7 +1263,8 @@ async function saveConfig(silent) {
       source_url: p.source_url||'', timeout: p.timeout||60,
       extra_headers: p.extra_headers||{}
     })),
-    selected_idx: selectedIdx
+    selected_idx: selectedIdx,
+    proxies: proxiesList
   };
   try {
     const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -1773,8 +1782,8 @@ async function validateSingle(name, quizMode = false) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi' }
-      : { name, stream, prompt: quiz ? quiz.question : 'hi' };
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined }
+      : { name, stream, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
 
     // SSE 流式读取：每个 key 验证完立刻显示
@@ -1925,7 +1934,7 @@ async function validateSingleKey(name, keyId, quizMode = false) {
   startPendingTicker();
   const stream = document.getElementById('chkStream').checked;
   try {
-    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
+    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined, key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     // 检查是否为 SSE 流（后端 key_id 找不到时返回 JSON 错误而非 SSE）
     const ct = resp.headers.get('Content-Type') || '';
@@ -2489,6 +2498,24 @@ init();
   </div>
 </div>
 
+<!-- 代理管理 Modal -->
+<div id="proxyModal" class="detail-modal" style="display:none" onclick="if(event.target===this)closeProxyModal()">
+  <div class="detail-modal-content" style="max-width:540px">
+    <div class="detail-modal-header">
+      <span class="detail-modal-title">🔗 代理管理</span>
+      <button class="detail-modal-close" onclick="closeProxyModal()">✕</button>
+    </div>
+    <div style="padding:16px 20px">
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <input id="proxyNameInput" type="text" placeholder="名称（可选）" style="flex:0 0 120px;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text1);font-size:13px;outline:none" />
+        <input id="proxyUrlInput" type="text" placeholder="socks5://user:pswd@host:port" style="flex:1;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text1);font-size:13px;outline:none" />
+        <button class="btn btn-primary" onclick="addProxy()" style="padding:8px 16px;white-space:nowrap">➕ 添加</button>
+      </div>
+      <div id="proxyListArea" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 function showDetailModal(td) {
   const text = td.getAttribute('data-full-text') || td.textContent || '';
@@ -2520,8 +2547,67 @@ function closeDetailModal() {
   modal.classList.remove('show');
 }
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeDetailModal();
+  if (e.key === 'Escape') { closeDetailModal(); closeProxyModal(); }
 });
+
+// ─── 代理管理 ─────────────────
+function showProxyModal() {
+  const modal = document.getElementById('proxyModal');
+  modal.style.display = 'flex';
+  renderProxyList();
+}
+function closeProxyModal() {
+  const modal = document.getElementById('proxyModal');
+  modal.style.display = 'none';
+}
+function renderProxyList() {
+  const area = document.getElementById('proxyListArea');
+  if (proxiesList.length === 0) {
+    area.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px">暂无代理，在上方添加</div>';
+    return;
+  }
+  area.innerHTML = proxiesList.map((px, i) => {
+    const name = esc(px.name || '');
+    const url = esc(px.url || '');
+    const displayUrl = url.length > 40 ? url.slice(0, 40) + '...' : url;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
+      <span style="flex:0 0 auto;font-weight:600;color:var(--text1);font-size:13px">${name || '🔗'}</span>
+      <span style="flex:1;font-family:monospace;font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${url}">${displayUrl}</span>
+      <button class="btn" style="padding:4px 10px;font-size:12px;color:var(--red);background:transparent;border:1px solid var(--border)" onclick="delProxy(${i})">🗑</button>
+    </div>`;
+  }).join('');
+}
+async function addProxy() {
+  const nameEl = document.getElementById('proxyNameInput');
+  const urlEl = document.getElementById('proxyUrlInput');
+  const name = nameEl.value.trim();
+  const url = urlEl.value.trim();
+  if (!url) { showToast('⚠️ 请输入代理地址', 'error'); return; }
+  // 简单格式校验
+  if (!/^(socks5|socks4|http|https):\/\//.test(url)) {
+    showToast('⚠️ 代理地址需以 socks5:// 或 http:// 开头', 'error'); return;
+  }
+  proxiesList.push({ name: name || url.slice(0, 20), url });
+  nameEl.value = '';
+  urlEl.value = '';
+  renderProxyList();
+  await saveProxies();
+}
+async function delProxy(idx) {
+  proxiesList.splice(idx, 1);
+  // 如果删的正好是当前选中的代理，切回直连
+  renderProxyList();
+  await saveProxies();
+  if (selectedIdx >= 0) renderDetail(); // 刷新代理下拉
+}
+async function saveProxies() {
+  try {
+    await fetch(`${API}/api/save-proxies`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ proxies: proxiesList })
+    });
+  } catch(e) { showToast('❌ 代理保存失败: ' + e.message, 'error'); }
+}
 </script>
 
 </body>
