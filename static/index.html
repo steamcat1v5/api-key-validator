@@ -598,7 +598,7 @@ async function init() {
     // 构建 key 列表（从 provider 的 api_keys 取预览 + key_id）
     const allKeys = p.api_keys.map((ak, i) => ({
       key_index: i,
-      key_id: _simpleHash(ak),
+      key_id: (p.key_ids && p.key_ids[i]) || _simpleHash(ak),
       key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
     }));
     // 后端返回正在运行的 key_ids（单 key 重测时只有部分 key 在跑）
@@ -1871,10 +1871,9 @@ async function validateSingleKey(name, keyId, quizMode = false) {
   // 建立/更新 liveKeyTableMap：保留已有结果，把目标 key 标记为 pending
   const existingMulti = validateResults[name]?.multi_results || [];
   const oldEntry = liveKeyTableMap[name];
-  // key_id 优先从后端 multi_results 取（已存有 key_id），否则用 sync hash
-  const existingMR = validateResults[name]?.multi_results || p.last_status?.multi_results || [];
+  // key_id 优先从后端 key_ids 数组取（/api/config 预计算的 sha256[:8]），否则 fallback
   const allKeys = p.api_keys.map((ak, i) => {
-    const kid = existingMR.find(m => m.key_index === i)?.key_id || _simpleHash(ak);
+    const kid = (p.key_ids && p.key_ids[i]) || _simpleHash(ak);
     return { key_index: i, key_id: kid, key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak };
   });
   // resultsMap 优先从旧的 liveEntry 取（保留正在进行的 key 的状态），

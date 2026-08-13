@@ -663,6 +663,9 @@ async def handle_get_config(request):
     for p in providers:
         if not p.get("last_status"):
             p["last_status"] = get_provider_last_status(p.get("name", ""))
+        # 预计算每个 key 的 key_id（sha256[:8]），前端直接用，不自己算 hash
+        aks = [k.strip() for k in p.get("api_keys", []) if k.strip()]
+        p["key_ids"] = [_key_id(ak) for ak in aks]
     # 从全局 _running_tasks 提取正在验证的 provider 和 key_id 列表
     running = {}
     for (pname, kid) in _running_tasks:
