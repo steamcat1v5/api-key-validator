@@ -1082,12 +1082,19 @@ async def handle_validate(request):
             # 按 key_id 查找并替换（如果没找到就追加）
             replaced = False
             for j, m in enumerate(existing):
-                if m.get("key_id") == new_kid:
-                    existing[j] = new_result
-                    replaced = True
-                    break
-                # fallback: 旧数据没有 key_id，按 key_index 匹配
-                if not m.get("key_id") and orig_key_index is not None and m.get("key_index") == orig_key_index:
+                m_kid = m.get("key_id")
+                match = (m_kid == new_kid) or (
+                    not m_kid and orig_key_index is not None and m.get("key_index") == orig_key_index)
+                if match:
+                    # 保留旧的 quiz 评分结果（新验证不应冲掉已完成的智测评分）
+                    if m.get("quiz_correct") is not None and new_result.get("quiz_correct") is None:
+                        new_result["quiz_correct"] = m["quiz_correct"]
+                    if m.get("quiz_reason") and not new_result.get("quiz_reason"):
+                        new_result["quiz_reason"] = m["quiz_reason"]
+                    # 如果新验证失败（429/错误等）但旧的有 content，保留旧 content
+                    # 让详情列继续显示之前的应答
+                    if not new_result.get("content") and m.get("content"):
+                        new_result["content"] = m["content"]
                     existing[j] = new_result
                     replaced = True
                     break
