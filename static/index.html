@@ -746,6 +746,11 @@ function renderDetail() {
           }
           if (targetKey) {
             contentToShow = targetKey.content || contentToShow;
+          } else {
+            // 没找到 targetKey：用 r.content 作为回复内容兜底
+            contentToShow = r.content || contentToShow;
+          }
+          if (targetKey) {
             const qr = targetKey;
             // 只在最近操作是智测、或该 key 本身有 quiz 状态时才显示 badge
             const showQuizBadge = (lastResultIsQuiz && qr.ok !== false) || (qr.quiz_correct != null) || (qr.quiz_reason && qr.quiz_reason !== 'pending');
@@ -1980,7 +1985,9 @@ async function validateSingleKey(name, keyId, quizMode = false) {
               validateResults[name] = validateResults[name] || {};
               validateResults[name].multi_results = finalMulti;
               // 同步更新顶层 content（单 key provider 的 renderDetail 从 r.content 取回复）
-              const latestContent = finalMulti.find(r => r.key_id === keyId && r.content);
+              const latestContent = finalMulti.find(r => r.key_id === keyId && r.content)
+                || finalMulti.find(r => r.key_index === (allKeys.findIndex(k => k.key_id === keyId)) && r.content)
+                || finalMulti.find(r => r.content);  // 最后 fallback：取第一个有 content 的
               if (latestContent) validateResults[name].content = latestContent.content;
               validateResults[name].status = data.status;
             }
