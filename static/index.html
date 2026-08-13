@@ -1543,6 +1543,20 @@ async function pollRunningStatus(name) {
 // 开测时调用：登记 key 列表（覆盖旧的已结束结果），并触发 renderDetail 重新绘制
 // 同一个表格原地更新：标题变回「测试中实时状态」，所有行重置为骨架
 function renderLiveKeyTableSkeleton(name, keys, quizMode = false) {
+  // 单 key 重测时，validateSingleKey 已设好了 liveKeyTableMap（保留其他 key 的已有结果），
+  // 此时 start 事件只带了 1 个 key，不应覆盖整个表格；只把该 key 标为 pending 即可
+  const existing = liveKeyTableMap[name];
+  if (existing && existing.keys && keys.length === 1 && existing.keys.length > 1) {
+    // 单 key 重测：只更新该 key 的 pending 状态，不覆盖整个 liveKeyTableMap
+    const kid = keys[0].key_id;
+    if (kid) {
+      existing.pendingKeys = existing.pendingKeys || {};
+      existing.pendingKeys[kid] = { mode: quizMode ? 'quiz' : 'verify', startedAt: Date.now() };
+    }
+    if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name) renderDetail();
+    startPendingTicker();
+    return;
+  }
   liveKeyTableMap[name] = { keys, results: {}, startedAt: Date.now(), quizMode };
   // 清空上一轮固化的 multi_results，避免 renderLiveKeyTableHTML 再叠加渲染
   if (validateResults[name]) validateResults[name].multi_results = null;
