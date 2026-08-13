@@ -1927,6 +1927,20 @@ async function validateSingleKey(name, keyId, quizMode = false) {
   try {
     const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    // 检查是否为 SSE 流（后端 key_id 找不到时返回 JSON 错误而非 SSE）
+    const ct = resp.headers.get('Content-Type') || '';
+    if (!ct.includes('text/event-stream')) {
+      // 非流式响应：后端返回了 JSON 错误
+      const errData = await resp.json().catch(() => ({}));
+      const errMsg = errData.error || `HTTP ${resp.status}`;
+      if (liveKeyTableMap[name]?.pendingKeys) {
+        delete liveKeyTableMap[name].pendingKeys[keyId];
+        if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
+      }
+      renderAll();
+      showToast(`❌ 「${name}」验证失败: ${errMsg}`, 'error');
+      return;
+    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -2031,6 +2045,11 @@ async function validateSingleKey(name, keyId, quizMode = false) {
           }
         } catch(e) { /* 忽略解析错误 */ }
       }
+    }
+    // while 循环结束后的 fallback：如果 done 事件没被处理，清理 pending 状态
+    if (liveKeyTableMap[name]?.pendingKeys?.[keyId]) {
+      delete liveKeyTableMap[name].pendingKeys[keyId];
+      if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
     }
   } catch(e) {
     if (liveKeyTableMap[name]?.pendingKeys) {
