@@ -2005,6 +2005,20 @@ async function validateSingleKey(name, keyId, quizMode = false) {
               const singleQuizMulti = finalMulti.filter(r => r.key_id === keyId && r.ok && r.content);
               if (singleQuizMulti.length > 0) {
                 await quizBatchJudge(name, quiz, judge, singleQuizMulti);
+              } else {
+                // 没有成功应答（429/错误等）：清除该 key 的 pending 状态
+                const keyIdx = allKeys.findIndex(k => k.key_id === keyId);
+                for (const r of finalMulti) {
+                  if ((r.key_id === keyId || (keyIdx >= 0 && r.key_index === keyIdx && !r.key_id)) && (r.quiz_correct === 'pending' || r.quiz_reason === 'pending')) {
+                    r.quiz_correct = null;
+                    r.quiz_reason = null;
+                  }
+                }
+                // 更新 validateResults 并重新渲染
+                if (validateResults[name]) {
+                  validateResults[name].multi_results = finalMulti;
+                  renderDetail();
+                }
               }
             }
           } else if (eventType === 'error') {
