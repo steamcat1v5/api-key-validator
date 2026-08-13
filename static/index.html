@@ -1899,7 +1899,7 @@ async function validateSingleKey(name, keyId, quizMode = false) {
   startPendingTicker();
   const stream = document.getElementById('chkStream').checked;
   try {
-    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_id: keyId, key_id: keyId, key_index: keyIndex };
+    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -1970,7 +1970,7 @@ async function validateSingleKey(name, keyId, quizMode = false) {
             renderAll();
             if (quizMode && finalMulti) {
               // 单 key 智测：只把当前 key 的结果发给裁判，而非全部 19 个
-              const singleQuizMulti = finalMulti.filter(r => r.key_index === keyIndex && r.ok && r.content);
+              const singleQuizMulti = finalMulti.filter(r => r.key_id === keyId && r.ok && r.content);
               if (singleQuizMulti.length > 0) {
                 await quizBatchJudge(name, quiz, judge, singleQuizMulti);
               }
