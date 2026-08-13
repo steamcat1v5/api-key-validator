@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 import time
 import re
+import hashlib
 from pathlib import Path
 from aiohttp import web
 import logging
@@ -33,13 +34,18 @@ _validation_start_times = {}
 # per-key 启动时间，用于刷新恢复时每个 key 独立计时
 _key_start_times = {}
 
-# 全局 set: (name, key_index) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
+# 全局 set: (name, key_id) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
 _running_quiz_keys = set()
 
 
 def _key_preview(ak):
     """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
     return ak[:8] + "..." + ak[-4:] if len(ak) > 12 else ak
+
+
+def _key_id(ak):
+    """稳定的 key 标识：sha256 前 8 位，增删 key 不影响其他 key 的 id"""
+    return hashlib.sha256(ak.encode()).hexdigest()[:8]
 
 
 
@@ -657,22 +663,23 @@ async def handle_get_config(request):
     for p in providers:
         if not p.get("last_status"):
             p["last_status"] = get_provider_last_status(p.get("name", ""))
-    # 从全局 _running_tasks 提取正在验证的 provider 和 key_index 列表
+    # 从全局 _running_tasks 提取正在验证的 provider 和 key_id 列表
     running = {}
-    for (pname, kidx) in _running_tasks:
-        task = _running_tasks[(pname, kidx)]
+    for (pname, kid) in _running_tasks:
+        task = _running_tasks[(pname, kid)]
         if not task.done():
             if pname not in running:
                 running[pname] = {
                     "key_indices": [],
                     "quiz_key_indices": [],
+                    "key_ids": [],
                     "started_at": _validation_start_times.get(pname, time.time()),
                     "key_started_at": {},
                 }
-            running[pname]["key_indices"].append(kidx)
-            running[pname]["key_started_at"][str(kidx)] = _key_start_times.get((pname, kidx), _validation_start_times.get(pname, time.time()))
-            if (pname, kidx) in _running_quiz_keys:
-                running[pname]["quiz_key_indices"].append(kidx)
+            running[pname]["key_ids"].append(kid)
+            running[pname]["key_started_at"][kid] = _key_start_times.get((pname, kid), _validation_start_times.get(pname, time.time()))
+            if (pname, kid) in _running_quiz_keys:
+                running[pname]["quiz_key_indices"].append(kid)
     return web.json_response({"providers": providers, "stream": cfg.get("stream", False), "selected_idx": selected_idx, "running_validations": running})
 
 
@@ -881,13 +888,25 @@ async def handle_validate(request):
     if not keys:
         return web.json_response({"ok": False, "error": "未提供 API Key", "logs": []})
 
-    # 支持单个 key 重测：传入 key_index 时只验证那一个 key
+    # 支持单个 key 重测：传入 key_id 或 key_index 时只验证那一个 key
+    key_id_filter = body.get("key_id")
     key_index_filter = body.get("key_index")
-    if key_index_filter is not None and 0 <= key_index_filter < len(keys):
+    orig_key_index = None
+    orig_key_id = None
+    if key_id_filter is not None:
+        # 按 key_id 查找对应的 key
+        for i, ak in enumerate(keys):
+            if _key_id(ak) == key_id_filter:
+                orig_key_index = i
+                orig_key_id = key_id_filter
+                keys = [ak]
+                break
+        if orig_key_id is None:
+            return web.json_response({"ok": False, "error": f"key_id {key_id_filter} 未找到", "logs": []})
+    elif key_index_filter is not None and 0 <= key_index_filter < len(keys):
         orig_key_index = key_index_filter
+        orig_key_id = _key_id(keys[key_index_filter])
         keys = [keys[key_index_filter]]
-    else:
-        orig_key_index = None
 
     # 用 SSE 流式响应：每个 key 验证完立刻 push 一条事件，前端实时显示
     resp = web.StreamResponse(status=200, headers={
@@ -898,15 +917,15 @@ async def handle_validate(request):
     })
     await resp.prepare(request)
 
-    # 立刻推送 start 事件：列出所有待测 key 的脱敏预览，前端收到即可渲染骨架表格
+    # 立刻推送 start 事件：列出所有待测 key 的脱敏预览 + key_id，前端收到即可渲染骨架表格
     # key_index 用原始索引（单 key 重测时也保持对应行号）
     start_payload = {
         "name": name,
-        "keys": [{"key_index": (orig_key_index if orig_key_index is not None else i), "key_preview": _key_preview(ak)} for i, ak in enumerate(keys)],
+        "keys": [{"key_index": (orig_key_index if orig_key_index is not None else i), "key_id": _key_id(ak), "key_preview": _key_preview(ak)} for i, ak in enumerate(keys)],
     }
     await resp.write(f"event: start\ndata: {json.dumps(start_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
 
-    async def validate_and_push(key_idx, ak):
+    async def validate_and_push(key_idx, key_id, ak):
         """验证单个 key，完成后立即通过 SSE 推送结果
 
         被外部 cancel() 取消时，捕获 CancelledError，推送一条 cancelled 状态的
@@ -923,16 +942,18 @@ async def handle_validate(request):
                 return None, None, None
             log = result.get("log", {})
             log["key_index"] = key_idx
+            log["key_id"] = key_id
             log["key_preview"] = _key_preview(ak)
             result["key_index"] = key_idx
+            result["key_id"] = key_id
             result["key_preview"] = _key_preview(ak)
             write_provider_log(name, log)
             # 智测模式下标记 quiz_correct='pending'——刷新页面后前端可据此补调裁判
             if prompt_text != "hi":
                 result["quiz_correct"] = "pending"
                 result["quiz_reason"] = "pending"
-            # 存入全局中间结果表，刷新页面后前端可取
-            _completed_results[(name, key_idx)] = result
+            # 存入全局中间结果表（用 key_id 做 key），刷新页面后前端可取
+            _completed_results[(name, key_id)] = result
             # 立刻推给前端（SSE 连接可能已断开，推送失败不影响结果）
             try:
                 await resp.write(f"event: key_done\ndata: {json.dumps(result, ensure_ascii=False)}\n\n".encode("utf-8"))
@@ -943,14 +964,14 @@ async def handle_validate(request):
             # 被前端通过 /api/cancel-key 主动取消：推送 cancelled 状态
             cancelled = {
                 "ok": False, "status": "cancelled", "model": model,
-                "key_index": key_idx, "key_preview": _key_preview(ak),
+                "key_index": key_idx, "key_id": key_id, "key_preview": _key_preview(ak),
                 "elapsed": None, "error": None,
             }
             try:
                 await resp.write(f"event: key_done\ndata: {json.dumps(cancelled, ensure_ascii=False)}\n\n".encode("utf-8"))
             except Exception:
                 pass
-            _completed_results[(name, key_idx)] = cancelled
+            _completed_results[(name, key_id)] = cancelled
             # 不重新抛出：把 cancelled 结果作为正常返回值，让 gather 正常收集
             return None, None, cancelled
         except Exception as e:
@@ -959,14 +980,14 @@ async def handle_validate(request):
             is_sse_error = any(s in err_str for s in ("Cannot write to closing transport", "Connection reset", "ClientConnectionError"))
             if is_sse_error:
                 # SSE 推送失败，验证本身可能已成功，不覆盖已有的正确结果
-                existing = _completed_results.get((name, key_idx))
+                existing = _completed_results.get((name, key_id))
                 if existing:
                     return existing, None, None
                 return {"ok": False, "status": "error", "model": model, "error": "SSE connection lost",
-                        "key_index": key_idx, "key_preview": _key_preview(ak)}, None, None
+                        "key_index": key_idx, "key_id": key_id, "key_preview": _key_preview(ak)}, None, None
             err_result = {"ok": False, "status": "error", "model": model, "error": err_str,
-                          "key_index": key_idx, "key_preview": _key_preview(ak)}
-            _completed_results[(name, key_idx)] = err_result
+                          "key_index": key_idx, "key_id": key_id, "key_preview": _key_preview(ak)}
+            _completed_results[(name, key_id)] = err_result
             try:
                 await resp.write(f"event: key_done\ndata: {json.dumps(err_result, ensure_ascii=False)}\n\n".encode("utf-8"))
             except Exception:
@@ -981,17 +1002,18 @@ async def handle_validate(request):
             await resp.write_eof()
             return resp
         # 把每个 key 的验证封装成 asyncio.Task，登记到全局 _running_tasks，
-        # 让 /api/cancel-key 可以按 (name, key_index) 取消单个任务
+        # 让 /api/cancel-key 可以按 (name, key_id) 取消单个任务
         _validation_start_times[name] = time.time()
         tasks = []
         for i, ak in enumerate(keys):
             # 单 key 重测时用原始 key_index 做映射
             real_idx = orig_key_index if orig_key_index is not None else i
-            _key_start_times[(name, real_idx)] = time.time()
-            task = asyncio.create_task(validate_and_push(real_idx, ak))
-            _running_tasks[(name, real_idx)] = task
+            kid = _key_id(ak)
+            _key_start_times[(name, kid)] = time.time()
+            task = asyncio.create_task(validate_and_push(real_idx, kid, ak))
+            _running_tasks[(name, kid)] = task
             if prompt_text != "hi":
-                _running_quiz_keys.add((name, real_idx))
+                _running_quiz_keys.add((name, kid))
             tasks.append(task)
         # return_exceptions=True：即使某个 task 内部异常不被自身 try/except 兜住，
         # 也不会让整个 gather 抛错；当前实现里 validate_and_push 已吃掉所有异常，
@@ -999,18 +1021,18 @@ async def handle_validate(request):
         done = await asyncio.gather(*tasks, return_exceptions=True)
         # 清理全局 task 表
         for i, _task in enumerate(tasks):
-            real_idx = orig_key_index if orig_key_index is not None else i
-            _running_tasks.pop((name, real_idx), None)
-            _running_quiz_keys.discard((name, real_idx))
+            kid = _key_id(keys[i])
+            _running_tasks.pop((name, kid), None)
+            _running_quiz_keys.discard((name, kid))
         # 清理中间结果表（全部完成后不再需要）
         for i in range(len(keys)):
-            real_idx = orig_key_index if orig_key_index is not None else i
-            _completed_results.pop((name, real_idx), None)
+            kid = _key_id(keys[i])
+            _completed_results.pop((name, kid), None)
         # 清理验证开始时间
         _validation_start_times.pop(name, None)
         for i in range(len(keys)):
-            real_idx = orig_key_index if orig_key_index is not None else i
-            _key_start_times.pop((name, real_idx), None)
+            kid = _key_id(keys[i])
+            _key_start_times.pop((name, kid), None)
         # 按原 key_index 顺序汇总结果
         for item in done:
             if isinstance(item, BaseException):
@@ -1049,15 +1071,21 @@ async def handle_validate(request):
         # 优先取第一个非 cancelled 结果作为展示主体
         first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
         merged_multi = all_results  # 默认用本次验证结果
-        # 单 key 重测：合并到现有 multi_results 中（替换对应 key_index 位置）
-        if orig_key_index is not None and provider.get("last_status", {}).get("multi_results"):
+        # 单 key 重测：合并到现有 multi_results 中（按 key_id 匹配替换）
+        if orig_key_id is not None and provider.get("last_status", {}).get("multi_results"):
             existing = list(provider["last_status"]["multi_results"])
-            # 确保列表足够长
-            while len(existing) <= orig_key_index:
-                existing.append({"status": "error", "error": "无需试"})
-            # 用新结果替换（保留旧的成功 result 如果新结果没返回 content）
             new_result = all_results[0]
-            existing[orig_key_index] = new_result
+            new_kid = new_result.get("key_id", orig_key_id)
+            # 按 key_id 查找并替换（如果没找到就追加）
+            replaced = False
+            for j, m in enumerate(existing):
+                if m.get("key_id") == new_kid:
+                    existing[j] = new_result
+                    replaced = True
+                    break
+            if not replaced:
+                # key_id 不在现有列表中（可能是新增的 key），追加到末尾
+                existing.append(new_result)
             merged_multi = existing
             # 重新计算 overall status
             merged_statuses = [r.get("status", "error") for r in merged_multi]
@@ -1085,9 +1113,9 @@ async def handle_validate(request):
     # 推送最终汇总事件
     summary = {
         "status": overall_status,
-        "multi_results": merged_multi if orig_key_index is not None else all_results,
+        "multi_results": merged_multi if orig_key_id is not None else all_results,
         "logs": logs,
-        "total": len(merged_multi) if orig_key_index is not None else len(all_results),
+        "total": len(merged_multi) if orig_key_id is not None else len(all_results),
     }
     await resp.write(f"event: done\ndata: {json.dumps(summary, ensure_ascii=False)}\n\n".encode("utf-8"))
     await resp.write_eof()
@@ -1102,17 +1130,29 @@ async def handle_cancel_key(request):
     """
     body = await request.json()
     name = body.get("name")
-    try:
-        key_index = int(body.get("key_index"))
-    except (TypeError, ValueError):
-        return web.json_response({"ok": False, "error": "key_index 必须是整数"}, status=400)
+    key_id = body.get("key_id")
+    if not key_id:
+        # backward compat: 尝试 key_index
+        try:
+            key_index = int(body.get("key_index", -1))
+        except (TypeError, ValueError):
+            return web.json_response({"ok": False, "error": "key_id 或 key_index 必须提供"}, status=400)
+        # 需要把 key_index 转成 key_id——从 config 里查
+        cfg = load_config()
+        provider = next((p for p in cfg.get("providers", []) if p["name"] == name), None)
+        if provider:
+            aks = [k.strip() for k in provider.get("api_keys", []) if k.strip()]
+            if 0 <= key_index < len(aks):
+                key_id = _key_id(aks[key_index])
     if not name:
         return web.json_response({"ok": False, "error": "缺少 name"}, status=400)
-    task = _running_tasks.get((name, key_index))
+    if not key_id:
+        return web.json_response({"ok": False, "error": "无法确定 key_id"}, status=400)
+    task = _running_tasks.get((name, key_id))
     if task is None or task.done():
         return web.json_response({"ok": False, "error": "无对应运行中的任务"}, status=404)
     task.cancel()
-    return web.json_response({"ok": True, "name": name, "key_index": key_index})
+    return web.json_response({"ok": True, "name": name, "key_id": key_id})
 
 
 async def handle_validate_status(request):
@@ -1127,18 +1167,18 @@ async def handle_validate_status(request):
         return web.json_response({"ok": False, "error": "缺少 name"}, status=400)
     running = []
     completed = []
-    for (pname, kidx), task in _running_tasks.items():
+    for (pname, kid), task in _running_tasks.items():
         if pname != name:
             continue
         if task.done():
             # 已完成，从 _completed_results 取结果
-            r = _completed_results.get((pname, kidx))
+            r = _completed_results.get((pname, kid))
             if r:
                 completed.append(r)
         else:
-            running.append(kidx)
+            running.append(kid)
     # 也收集不在 _running_tasks 但在 _completed_results 里的（边界情况）
-    for (pname, kidx), r in _completed_results.items():
+    for (pname, kid), r in _completed_results.items():
         if pname == name and r not in completed:
             completed.append(r)
     if not running and not completed:
@@ -1579,11 +1619,16 @@ async def handle_save_quiz_result(request):
                 mrs = multi_results
                 ls["multi_results"] = multi_results
             if mrs:
-                # 按 key_index 更新对应 key 的 quiz 状态，而非只写 mrs[0]
+                # 按 key_id 更新对应 key 的 quiz 状态（fallback 到 key_index）
                 if multi_results:
                     for mr_item in multi_results:
+                        kid = mr_item.get("key_id")
                         ki = mr_item.get("key_index")
-                        target = next((m for m in mrs if m.get("key_index") == ki), None)
+                        target = None
+                        if kid:
+                            target = next((m for m in mrs if m.get("key_id") == kid), None)
+                        if not target and ki is not None:
+                            target = next((m for m in mrs if m.get("key_index") == ki), None)
                         if target:
                             target["quiz_correct"] = mr_item.get("quiz_correct")
                             target["quiz_reason"] = mr_item.get("quiz_reason", "")

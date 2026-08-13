@@ -478,6 +478,15 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 
 <script>
 const API = '';
+
+// 简单同步 hash（替代 crypto.subtle.digest 的 async 限制）
+// 注意：这不是 sha256，只是一个稳定的 key 标识
+// 后端返回的 key_id 是真正的 sha256[:8]，前端收到后直接使用
+function _simpleHash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 8);
+}
 let providersData = [];
 let selectedIdx = -1;
 let logEntriesByProvider = {}; // name -> [entries]
@@ -514,8 +523,8 @@ const QUIZ_BANK = [
 
 // 智力测试状态（localStorage 持久化）
 let quizSelectedId = '';      // 选中的题目 id
-let lastQuizKeyIdx = -1;     // 最近智测的 key_index（用于 renderDetail 优先显示）
-let lastResultKeyIdx = -1;   // 最近完成操作的 key_index（验证或智测，renderDetail 优先取此 key）
+let lastQuizKeyId = '';      // 最近智测的 key_id（用于 renderDetail 优先显示）
+let lastResultKeyId = '';    // 最近完成操作的 key_id（验证或智测，renderDetail 优先取此 key）
 let lastResultIsQuiz = false; // 最近操作是否为智测
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
@@ -586,21 +595,24 @@ async function init() {
   for (const [rname, rinfo] of Object.entries(runningValidations)) {
     const p = providersData.find(x => x.name === rname);
     if (!p || !p.api_keys || p.api_keys.length === 0) continue;
-    // 构建 key 列表（从 provider 的 api_keys 取预览）
+    // 构建 key 列表（从 provider 的 api_keys 取预览 + key_id）
     const allKeys = p.api_keys.map((ak, i) => ({
       key_index: i,
+      key_id: _simpleHash(ak),
       key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
     }));
-    // 后端返回正在运行的 key_indices（单 key 重测时只有部分 key 在跑）
+    // 后端返回正在运行的 key_ids（单 key 重测时只有部分 key 在跑）
+    const runningKeyIds = new Set(rinfo.key_ids || []);
     const runningKeyIndices = new Set(rinfo.key_indices || []);
     // 保留已有的 multi_results 作为已完成行的结果，不清空
     const existingMulti = validateResults[rname]?.multi_results || [];
     const resultsMap = {};
     for (const k of allKeys) {
-      const existing = existingMulti.find(m => m.key_index === k.key_index);
-      if (!runningKeyIndices.has(k.key_index) && existing) {
+      const kid = k.key_id;
+      const existing = existingMulti.find(m => m.key_id === kid);
+      if (!runningKeyIds.has(kid) && !runningKeyIndices.has(k.key_index) && existing) {
         // 不在运行 + 有旧结果 → 直接恢复，不显示骨架
-        resultsMap[k.key_index] = existing;
+        resultsMap[kid] = existing;
       }
       // 正在运行的 key 不放 results → 渲染为 pending 骨架
     }
@@ -609,9 +621,10 @@ async function init() {
     // 从后端的 quiz_key_indices 构造 pendingKeys
     const quizKeySet = new Set(rinfo.quiz_key_indices || []);
     const pendingKeys = {};
-    for (const kidx of runningKeyIndices) {
-      const keyTs = keyStartedAtMap[String(kidx)] ? keyStartedAtMap[String(kidx)] * 1000 : startedAt;
-      pendingKeys[kidx] = { mode: quizKeySet.has(kidx) ? 'quiz' : 'verify', startedAt: keyTs };
+    // 后端 key_started_at 现在用 key_id 做 key
+    for (const kid of runningKeyIds) {
+      const keyTs = keyStartedAtMap[kid] ? keyStartedAtMap[kid] * 1000 : startedAt;
+      pendingKeys[kid] = { mode: quizKeySet.has(kid) ? 'quiz' : 'verify', startedAt: keyTs };
     }
     liveKeyTableMap[rname] = { keys: allKeys, results: resultsMap, startedAt, pendingKeys };
     // 启动秒钟 ticker
@@ -718,13 +731,13 @@ function renderDetail() {
         let badge = '';
         let contentToShow = r.content || '';
         if (r.multi_results && r.multi_results.length > 1) {
-          // 多 key：优先取最近操作的 key（lastResultKeyIdx），其次取最近智测的 key
+          // 多 key：优先取最近操作的 key（lastResultKeyId），其次取最近智测的 key
           let targetKey = null;
-          if (lastResultKeyIdx >= 0) {
-            targetKey = r.multi_results.find(m => m.key_index === lastResultKeyIdx);
+          if (lastResultKeyId !== '') {
+            targetKey = r.multi_results.find(m => m.key_id === lastResultKeyId);
           }
-          if (!targetKey && lastQuizKeyIdx >= 0) {
-            targetKey = r.multi_results.find(m => m.key_index === lastQuizKeyIdx);
+          if (!targetKey && lastQuizKeyId !== '') {
+            targetKey = r.multi_results.find(m => m.key_id === lastQuizKeyId);
           }
           if (!targetKey) {
             // fallback：取第一个有 quiz 状态的 key
@@ -1038,7 +1051,7 @@ function onUrlChange(idx, value) {
 // ─── 操作 ─────────────────
 async function selectProvider(i) {
   selectedIdx = i;
-  // 切换 provider 时恢复该 provider 的 lastQuizKeyIdx
+  // 切换 provider 时恢复该 provider 的 lastQuizKeyId
   restoreLastQuizKeyIdx();
   renderAll();
   renderLog(); // 立即显示当前 provider 的日志（可能是空）
@@ -1344,13 +1357,13 @@ function renderLiveKeyTableHTML(name) {
   // pendingKeys: { keyIndex: { mode: 'verify'|'quiz', startedAt: number } } — per-key 验证/智测 + 独立计时
   const pendingKeys = entry?.pendingKeys || {};
   // 全局 quizMode（批量验证时用），单 key 重测时从 pendingKeys 取
-  const getPendingLabel = (keyIdx) => {
-    const pk = pendingKeys[keyIdx];
+  const getPendingLabel = (keyId) => {
+    const pk = pendingKeys[keyId];
     if (pk?.mode === 'quiz') return '🧠 智测中';
     if (pk?.mode === 'verify') return '🔍 验证中';
     return entry?.quizMode ? '🧠 智测中' : '🔍 验证中';
   };
-  const getKeyStartedAt = (keyIdx) => pendingKeys[keyIdx]?.startedAt || entry?.startedAt || Date.now();
+  const getKeyStartedAt = (keyId) => pendingKeys[keyId]?.startedAt || entry?.startedAt || Date.now();
   const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
   const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
   const total = keys.length;
@@ -1365,19 +1378,19 @@ function renderLiveKeyTableHTML(name) {
     : `多 Key 验证结果 (${total} 个)`;
 
   const rows = keys.map(k => {
-    const result = results[k.key_index];
+    const result = results[k.key_id || k.key_index];
     const rowId = `keyrow-${cssEscape(name)}-${k.key_index}`;
     if (!result) {
       // 骨架行（只有测试中才看到）— 状态文本由 lk-pending-ticker 每秒更新秒数
-      const keyStartedAt = getKeyStartedAt(k.key_index);
+      const keyStartedAt = getKeyStartedAt(k.key_id || k.key_index);
       const elapsedSec = Math.max(0, Math.floor((Date.now() - keyStartedAt) / 1000));
       const label = getPendingLabel(k.key_index);
-      const pkMode = pendingKeys[k.key_index]?.mode;
+      const pkMode = pendingKeys[k.key_id || k.key_index]?.mode;
       const opsLabel = pkMode === 'quiz' ? '智测中' : (pkMode === 'verify' ? '验证中' : (entry?.quizMode ? '智测中' : '验证中'));
       // 单 key 重测：有停止按钮可取消；已有结果但非 global busy：无停止按钮
       const isGlobalRunning = busySet.has(name);
       const stopBtn = isGlobalRunning
-        ? `<button class="lk-stop" onclick="cancelKey('${escName}', ${k.key_index}, this)">⏹ 停止</button>`
+        ? `<button class="lk-stop" onclick="cancelKey('${escName}', '${k.key_id || k.key_index}', this)">⏹ 停止</button>`
         : `<button class="lk-stop" disabled>${opsLabel}</button>`;
       return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
@@ -1496,13 +1509,13 @@ async function pollRunningStatus(name) {
             // 只把 pending 的 key 发给裁判
             const toJudge = pendingResults.filter(r => r.ok && r.content);
             if (toJudge.length > 0) {
-              // 恢复 lastQuizKeyIdx（取第一个 pending 的 key）
+              // 恢复 lastQuizKeyId（取第一个 pending 的 key）
               const firstPending = toJudge[0];
               if (firstPending?.key_index != null) {
-                lastQuizKeyIdx = firstPending.key_index;
-                lastResultKeyIdx = firstPending.key_index;
+                lastQuizKeyId = firstPending.key_id;
+                lastResultKeyId = firstPending.key_id;
                 lastResultIsQuiz = true;
-                try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(lastQuizKeyIdx)); } catch(e) {}
+                try { localStorage.setItem(`lastQuizKeyId_${name}`, String(lastQuizKeyId)); } catch(e) {}
               }
               renderAll(); // 先确保显示 ⏳ 评分中
               await quizBatchJudge(name, quiz, judge, toJudge);
@@ -1575,7 +1588,7 @@ function updateLiveKeyRow(name, result) {
   const entry = liveKeyTableMap[name];
   if (!entry) return;
   if (!result || result.key_index == null) return;
-  entry.results[result.key_index] = result;
+  entry.results[result.key_id || result.key_index] = result;
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
     renderDetail();
   }
@@ -1585,7 +1598,7 @@ function updateLiveKeyRow(name, result) {
 function updateLiveKeyRowQuizPending(name, key_index) {
   const entry = liveKeyTableMap[name];
   if (!entry) return;
-  const result = entry.results[key_index];
+  const result = entry.results[key_id || key_index];
   if (result) {
     result.quiz_correct = 'pending';
     result.quiz_reason = 'pending';
@@ -1603,7 +1616,7 @@ function clearLiveKeyTable(name) {
   }
 }
 
-async function cancelKey(name, key_index, btn) {
+async function cancelKey(name, keyId, btn) {
   if (!name) return;
   // 给按钮立刻加上 stopping 样式 + 禁用，让用户看到反馈
   if (btn) {
@@ -1614,7 +1627,7 @@ async function cancelKey(name, key_index, btn) {
   try {
     const resp = await fetch(`${API}/api/cancel-key`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ name, key_index })
+      body: JSON.stringify({ name, key_id: keyId })
     });
     if (!resp.ok) {
       // 不存在或已完成：恢复按钮状态让用户看到 "已完成"
@@ -1768,7 +1781,7 @@ async function validateSingle(name, quizMode = false) {
           const data = JSON.parse(dataLine);
           if (eventType === 'start') {
             // 收到 key 列表：渲染骨架表格
-            const keyList = (data.keys || []).map(k => ({ key_index: k.key_index, key_preview: k.key_preview }));
+            const keyList = (data.keys || []).map(k => ({ key_index: k.key_index, key_id: k.key_id, key_preview: k.key_preview }));
             renderLiveKeyTableSkeleton(name, keyList, quizMode);
           } else if (eventType === 'key_done') {
             // 单个 key 验证完（含 cancelled），更新对应行 + 推日志
@@ -1824,11 +1837,11 @@ async function validateSingle(name, quizMode = false) {
 }
 
 // 单个 key 重测/智测：只验证指定 key_index 的 key，完成后更新该行
-async function validateSingleKey(name, keyIndex, quizMode = false) {
+async function validateSingleKey(name, keyId, quizMode = false) {
   const quiz = quizMode ? getCurrentQuiz() : null;
   const judge = quizMode ? getJudgeProvider() : null;
   if (quizMode) {
-    // 注意：不在此处设置 lastResultKeyIdx，等 done 事件结果回来后再设
+    // 注意：不在此处设置 lastResultKeyId，等 done 事件结果回来后再设
     // 否则点击智测的瞬间 renderAll 会用旧验证结果更新回复内容
   }
   if (quizMode && (!quiz || !judge)) {
@@ -1844,26 +1857,28 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   // 建立/更新 liveKeyTableMap：保留已有结果，把目标 key 标记为 pending
   const existingMulti = validateResults[name]?.multi_results || [];
   const oldEntry = liveKeyTableMap[name];
-  const allKeys = p.api_keys.map((ak, i) => ({
-    key_index: i,
-    key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak
-  }));
+  // key_id 优先从后端 multi_results 取（已存有 key_id），否则用 sync hash
+  const existingMR = validateResults[name]?.multi_results || p.last_status?.multi_results || [];
+  const allKeys = p.api_keys.map((ak, i) => {
+    const kid = existingMR.find(m => m.key_index === i)?.key_id || _simpleHash(ak);
+    return { key_index: i, key_id: kid, key_preview: ak.length > 12 ? ak.slice(0, 8) + '...' + ak.slice(-4) : ak };
+  });
   // resultsMap 优先从旧的 liveEntry 取（保留正在进行的 key 的状态），
   // 没有 liveEntry 的 key 再从固化的 existingMulti 取
   // 但正在 pending 的 key（pendingKeys 里有）不放 result，让它显示骨架
   const oldPendingKeys = oldEntry?.pendingKeys || {};
   const resultsMap = {};
   for (const k of allKeys) {
-    if (k.key_index === keyIndex) continue; // 新目标 key 不放 result
-    if (oldPendingKeys[k.key_index]) continue; // 旧 pending key 不放 result
+    if (k.key_id === keyId) continue; // 新目标 key 不放 result
+    if (oldPendingKeys[k.key_id]) continue; // 旧 pending key 不放 result
     // 优先用 liveEntry 里已有的结果
-    const fromLive = oldEntry?.results?.[k.key_index];
+    const fromLive = oldEntry?.results?.[k.key_id];
     if (fromLive) {
-      resultsMap[k.key_index] = fromLive;
+      resultsMap[k.key_id] = fromLive;
     } else {
       // 否则从固化结果取
-      const existing = existingMulti.find(m => m.key_index === k.key_index);
-      if (existing) resultsMap[k.key_index] = existing;
+      const existing = existingMulti.find(m => m.key_id === k.key_id);
+      if (existing) resultsMap[k.key_id] = existing;
     }
   }
   // 记录每个 key 的 pending 状态（验证/智测）
@@ -1875,7 +1890,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
     startedAt: liveKeyTableMap[name]?.startedAt || Date.now(),
     pendingKeys: { ...(liveKeyTableMap[name]?.pendingKeys || {}) },
   };
-  liveKeyTableMap[name].pendingKeys[keyIndex] = { mode: quizMode ? 'quiz' : 'verify', startedAt: Date.now() };
+  liveKeyTableMap[name].pendingKeys[keyId] = { mode: quizMode ? 'quiz' : 'verify', startedAt: Date.now() };
   // 渲染表格
   if (selectedIdx >= 0 && providersData[selectedIdx]?.name === name) {
     renderDetail();
@@ -1884,7 +1899,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
   startPendingTicker();
   const stream = document.getElementById('chkStream').checked;
   try {
-    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_index: keyIndex };
+    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', key_id: keyId, key_id: keyId, key_index: keyIndex };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -1916,12 +1931,12 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
               updateLiveKeyRowQuizPending(name, data.key_index);
             }
           } else if (eventType === 'done') {
-            // 单 key 重测完成：更新 lastResultKeyIdx（结果回来后才设）
-            lastResultKeyIdx = keyIndex;
+            // 单 key 重测完成：更新 lastResultKeyId（结果回来后才设）
+            lastResultKeyId = keyId;
             lastResultIsQuiz = quizMode;
             if (quizMode) {
-              lastQuizKeyIdx = keyIndex;
-              try { localStorage.setItem(`lastQuizKeyIdx_${name}`, String(keyIndex)); } catch(e) {}
+              lastQuizKeyId = keyId;
+              try { localStorage.setItem(`lastQuizKeyId_${name}`, keyId); } catch(e) {}
             }
             // 单 key 重测完成：更新 validateResults 的多 key 表格
             const finalMulti = data.multi_results || (singleResult ? [singleResult] : null);
@@ -1930,7 +1945,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
               // 注意：单 key 重测时后端返回的 multi_results 包含所有 key 的历史结果，
               // 但只有当前 keyIndex 是新智测的，不应把其他 key 也发给裁判
               for (const r of finalMulti) {
-                if (r.key_index === keyIndex && r.ok && r.content) {
+                if (r.key_id === keyId && r.ok && r.content) {
                   r.quiz_correct = 'pending';
                   r.quiz_reason = 'pending';
                 }
@@ -1940,13 +1955,13 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
               validateResults[name] = validateResults[name] || {};
               validateResults[name].multi_results = finalMulti;
               // 同步更新顶层 content（单 key provider 的 renderDetail 从 r.content 取回复）
-              const latestContent = finalMulti.find(r => r.key_index === keyIndex && r.content);
+              const latestContent = finalMulti.find(r => r.key_id === keyId && r.content);
               if (latestContent) validateResults[name].content = latestContent.content;
               validateResults[name].status = data.status;
             }
             // 清理该 key 的 pending 状态
             if (liveKeyTableMap[name]?.pendingKeys) {
-              delete liveKeyTableMap[name].pendingKeys[keyIndex];
+              delete liveKeyTableMap[name].pendingKeys[keyId];
               // 如果没有 pending key 了，清理整个 liveKeyTableMap
               if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) {
                 delete liveKeyTableMap[name];
@@ -1962,7 +1977,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
             }
           } else if (eventType === 'error') {
             if (liveKeyTableMap[name]?.pendingKeys) {
-              delete liveKeyTableMap[name].pendingKeys[keyIndex];
+              delete liveKeyTableMap[name].pendingKeys[keyId];
               if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
             }
             renderAll();
@@ -1973,7 +1988,7 @@ async function validateSingleKey(name, keyIndex, quizMode = false) {
     }
   } catch(e) {
     if (liveKeyTableMap[name]?.pendingKeys) {
-      delete liveKeyTableMap[name].pendingKeys[keyIndex];
+      delete liveKeyTableMap[name].pendingKeys[keyId];
       if (Object.keys(liveKeyTableMap[name].pendingKeys).length === 0) delete liveKeyTableMap[name];
     }
     renderAll();
@@ -2261,19 +2276,19 @@ function restoreLastQuizKeyIdx() {
   try {
     const p = providersData[selectedIdx];
     if (p) {
-      const v = localStorage.getItem(`lastQuizKeyIdx_${p.name}`);
-      lastQuizKeyIdx = v != null ? parseInt(v) : -1;
+      const v = localStorage.getItem(`lastQuizKeyId_${p.name}`);
+      lastQuizKeyId = v != null ? v : -1;
       // 刷新/切 provider 时，恢复最近操作的 key
       // 如果该 key 有 quiz 状态则视为智测，否则视为验证
-      lastResultKeyIdx = lastQuizKeyIdx;
-      if (lastResultKeyIdx >= 0 && p.last_status?.multi_results) {
-        const mr = p.last_status.multi_results.find(m => m.key_index === lastResultKeyIdx);
+      lastResultKeyId = lastQuizKeyId;
+      if (lastResultKeyId !== '' && p.last_status?.multi_results) {
+        const mr = p.last_status.multi_results.find(m => m.key_id === lastResultKeyId);
         lastResultIsQuiz = !!(mr && (mr.quiz_correct != null || mr.quiz_reason));
       } else {
         lastResultIsQuiz = false;
       }
     }
-  } catch(e) { lastQuizKeyIdx = -1; lastResultKeyIdx = -1; lastResultIsQuiz = false; }
+  } catch(e) { lastQuizKeyId = ''; lastResultKeyId = ''; lastResultIsQuiz = false; }
 }
 
 function toggleQuizMenu() {
