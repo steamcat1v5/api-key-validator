@@ -748,7 +748,7 @@ function renderDetail() {
             contentToShow = targetKey.content || contentToShow;
             const qr = targetKey;
             // 只在最近操作是智测、或该 key 本身有 quiz 状态时才显示 badge
-            const showQuizBadge = lastResultIsQuiz || (qr.quiz_correct != null || qr.quiz_reason);
+            const showQuizBadge = (lastResultIsQuiz && qr.ok !== false) || (qr.quiz_correct != null) || (qr.quiz_reason && qr.quiz_reason !== 'pending');
             if (showQuizBadge) {
               if (qr.quiz_correct === true) {
                 badge = `<div style="margin-top:8px;padding:6px 12px;background:var(--green-bg,rgba(40,200,100,.1));border-radius:6px"><span style="color:var(--green);font-weight:600;font-size:14px">✓ 回答正确</span>${qr.quiz_reason ? ` <span style="color:var(--text2);font-size:12px">${esc(String(qr.quiz_reason).slice(0, 120))}</span>` : ''}</div>`;
@@ -1964,11 +1964,15 @@ async function validateSingleKey(name, keyId, quizMode = false) {
             if (quizMode && finalMulti) {
               // 智力测试：在调裁判前，先把正在智测的那个 key 标为「评分中」
               // 注意：单 key 重测时后端返回的 multi_results 包含所有 key 的历史结果，
-              // 但只有当前 keyIndex 是新智测的，不应把其他 key 也发给裁判
+              // 但只有当前 keyId 是新智测的，不应把其他 key 也发给裁判
               for (const r of finalMulti) {
                 if (r.key_id === keyId && r.ok && r.content) {
                   r.quiz_correct = 'pending';
                   r.quiz_reason = 'pending';
+                } else if (r.key_id === keyId && !r.ok) {
+                  // 429/错误：清除旧 quiz 状态，避免显示残留的"评分中"
+                  r.quiz_correct = null;
+                  r.quiz_reason = null;
                 }
               }
             }
