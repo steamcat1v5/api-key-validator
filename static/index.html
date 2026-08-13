@@ -609,7 +609,8 @@ async function init() {
     const resultsMap = {};
     for (const k of allKeys) {
       const kid = k.key_id;
-      const existing = existingMulti.find(m => m.key_id === kid);
+      const existing = existingMulti.find(m => m.key_id === kid) 
+        || existingMulti.find(m => m.key_index === k.key_index);
       if (!runningKeyIds.has(kid) && !runningKeyIndices.has(k.key_index) && existing) {
         // 不在运行 + 有旧结果 → 直接恢复，不显示骨架
         resultsMap[kid] = existing;
@@ -1364,8 +1365,10 @@ function renderLiveKeyTableHTML(name) {
     return entry?.quizMode ? '🧠 智测中' : '🔍 验证中';
   };
   const getKeyStartedAt = (keyId) => pendingKeys[keyId]?.startedAt || entry?.startedAt || Date.now();
-  const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_preview: m.key_preview }));
-  const results = isPlaying ? entry.results : Object.fromEntries(multi.map(m => [m.key_index, m]));
+  const keys = isPlaying ? entry.keys : multi.map(m => ({ key_index: m.key_index, key_id: m.key_id || m.key_index, key_preview: m.key_preview }));
+  // 已完成时 results 同时按 key_id 和 key_index 存入，兼容两种查找
+  const _multiResults = isPlaying ? entry.results : Object.fromEntries(multi.flatMap(m => [[m.key_id, m], [m.key_index, m]].filter(([k]) => k != null)));
+  const results = _multiResults;
   const total = keys.length;
   const escName = esc(name);
   if (total < 1) return ''; // 防御
@@ -1889,9 +1892,14 @@ async function validateSingleKey(name, keyId, quizMode = false) {
     if (fromLive) {
       resultsMap[k.key_id] = fromLive;
     } else {
-      // 否则从固化结果取
-      const existing = existingMulti.find(m => m.key_id === k.key_id);
-      if (existing) resultsMap[k.key_id] = existing;
+      // 否则从固化结果取（优先按 key_id 匹配，fallback 按 key_index）
+      const existing = existingMulti.find(m => m.key_id === k.key_id) 
+        || existingMulti.find(m => m.key_index === k.key_index);
+      if (existing) {
+        // 确保 existing 有 key_id（旧数据可能没有）
+        if (!existing.key_id) existing.key_id = k.key_id;
+        resultsMap[k.key_id] = existing;
+      }
     }
   }
   // 记录每个 key 的 pending 状态（验证/智测）
