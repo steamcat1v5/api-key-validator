@@ -766,6 +766,44 @@ async def handle_save_proxies(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def handle_update_provider(request):
+    """增量更新单个 provider 的字段，不影响全局配置（proxies 等）"""
+    try:
+        body = await request.json()
+        name = body.get("name", "")
+        if not name:
+            return web.json_response({"ok": False, "error": "缺少 provider name"}, status=400)
+        cfg = load_config()
+        providers = cfg.get("providers", [])
+        # 按 name 查找 provider（也支持按 index 查找）
+        idx = body.get("index")
+        target = None
+        if idx is not None and 0 <= idx < len(providers):
+            target = providers[idx]
+        else:
+            for p in providers:
+                if p.get("name") == name:
+                    target = p
+                    break
+        if target is None:
+            return web.json_response({"ok": False, "error": f"provider '{name}' 未找到"}, status=404)
+        # 增量更新：只更新传入的字段
+        update_fields = ["name", "type", "base_url", "api_keys", "models", "selected_model",
+                        "source_url", "timeout", "extra_headers", "selected_proxy"]
+        for f in update_fields:
+            if f in body:
+                # api_keys 为空或全是 *** 时保留旧值
+                if f == "api_keys":
+                    keys = body[f]
+                    if not keys or all("***" in k for k in keys):
+                        continue  # 保留旧值
+                target[f] = body[f]
+        save_config(cfg)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def handle_fetch_models(request):
     """获取单个 provider 的模型列表并保存到 config
     
@@ -1679,6 +1717,7 @@ app.router.add_get("/static/{tail:.*}", handle_static)
 app.router.add_get("/api/config", handle_get_config)
 app.router.add_post("/api/config", handle_save_config)
 app.router.add_post("/api/save-proxies", handle_save_proxies)
+app.router.add_post("/api/update-provider", handle_update_provider)
 app.router.add_post("/api/fetch-models", handle_fetch_models)
 app.router.add_post("/api/fetch-all-models", handle_fetch_all_models)
 app.router.add_post("/api/validate", handle_validate)

@@ -1228,20 +1228,22 @@ function fillExtraHeaders(idx) {
 async function saveProvider(i) {
   const p = providersData[i];
   if (!p) return;
-  // 先保存全部（后端是全量保存），然后更新该 provider 的快照
+  // 增量保存：只传这一个 provider 的字段，不影响全局 proxies 等
   const payload = {
-    providers: providersData.map(pp => ({
-      name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
-      api_keys: pp.api_keys||[], models: pp.models||[], selected_model: pp.selected_model||'',
-      source_url: pp.source_url||'', timeout: pp.timeout||60,
-      extra_headers: pp.extra_headers||{},
-      selected_proxy: pp.selected_proxy||''
-    })),
-    selected_idx: selectedIdx,
-    proxies: proxiesList
+    name: p.name,
+    type: p.type || 'openai',
+    base_url: p.base_url,
+    api_keys: p.api_keys || [],
+    models: p.models || [],
+    selected_model: p.selected_model || '',
+    source_url: p.source_url || '',
+    timeout: p.timeout || 60,
+    extra_headers: p.extra_headers || {},
+    selected_proxy: p.selected_proxy || '',
+    index: i
   };
   try {
-    const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const resp = await fetch(`${API}/api/update-provider`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const data = await resp.json();
     if (data.ok) {
       p._snapshot = takeSnapshot(p);
