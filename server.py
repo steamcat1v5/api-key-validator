@@ -277,6 +277,7 @@ def load_config():
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         providers = cfg.get("providers", [])
+        proxy_urls = {px.get("url", "") for px in cfg.get("proxies", [])}
         for p in providers:
             p.setdefault("models", [])
             p.setdefault("selected_model", "")
@@ -284,6 +285,10 @@ def load_config():
             p.setdefault("api_keys", [])
             p.setdefault("selected_proxy", "")
             p.setdefault("timeout", 60)
+            # 校验 selected_proxy 有效性：引用的代理不在列表里则回退直连
+            sp = p.get("selected_proxy", "")
+            if sp and sp not in proxy_urls:
+                p["selected_proxy"] = ""
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
         cfg.setdefault("proxies", [])

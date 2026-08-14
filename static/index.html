@@ -2600,13 +2600,26 @@ async function addProxy() {
 async function delProxy(idx) {
   const removedUrl = proxiesList[idx]?.url;
   proxiesList.splice(idx, 1);
-  // 如果删的代理正被某 provider 使用，清回直连
-  if (removedUrl) {
-    providersData.forEach((p, i) => { if (p.selected_proxy === removedUrl) { p.selected_proxy = ''; checkDirty(i); } });
-  }
+  // 后端先保存代理列表
   renderProxyList();
   await saveProxies();
-  if (selectedIdx >= 0) renderDetail(); // 刷新代理下拉
+  // 如果删的代理正被某 provider 使用，清回直连（前端+后端同步）
+  if (removedUrl) {
+    for (let i = 0; i < providersData.length; i++) {
+      if (providersData[i].selected_proxy === removedUrl) {
+        providersData[i].selected_proxy = '';
+        checkDirty(i);
+        // 后端同步清空
+        try {
+          await fetch(`${API}/api/update-provider`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ name: providersData[i].name, selected_proxy: '', index: i })
+          });
+        } catch(e) { /* 忽略，后端 load_config 会兜底校验 */ }
+      }
+    }
+  }
+  if (selectedIdx >= 0) renderDetail();
 }
 async function saveProxies() {
   try {
