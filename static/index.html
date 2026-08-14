@@ -490,7 +490,6 @@ function _simpleHash(str) {
 }
 let providersData = [];
 let proxiesList = []; // 代理列表 [{name, url}]
-let selectedProxy = ''; // 当前选中的代理 URL（空=直连）
 let selectedIdx = -1;
 let logEntriesByProvider = {}; // name -> [entries]
 let logTabStates = {}; // entryId -> 'request' | 'response'
@@ -532,7 +531,7 @@ let lastResultIsQuiz = false; // 最近操作是否为智测
 let quizJudgeProvider = '';   // 裁判 provider 名称
 
 // ─── 快照 & 脏检测 ─────────────────
-const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout', 'extra_headers'];
+const SAVE_FIELDS = ['name', 'type', 'base_url', 'api_keys', 'source_url', 'selected_model', 'timeout', 'extra_headers', 'selected_proxy'];
 
 function takeSnapshot(p) {
   const snap = {};
@@ -862,11 +861,11 @@ function renderDetail() {
       <button class="btn btn-fetch" onclick="fetchModels('${esc(p.name)}')" ${busySet.has(p.name) ?'disabled':''}>📡 获取模型</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}')" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''}>🔍 验证</button>
       <button class="btn btn-primary" onclick="validateSingle('${esc(p.name)}', true)" ${busySet.has(p.name) || !p.selected_model ? 'disabled' : ''} style="${quizSelectedId ? 'background:var(--accent2)' : ''}">🧠 智测</button>
-      <select id="proxySelect_${selectedIdx}" style="width:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="selectedProxy=this.value;renderDetail()">
-        <option value="" ${!selectedProxy?'selected':''}>🔌 直连</option>
-        ${proxiesList.map(px => `<option value="${esc(px.url)}" ${selectedProxy===px.url?'selected':''}>🔗 ${esc(px.name||px.url.slice(0,30))}</option>`).join('')}
+      <select id="proxySelect_${selectedIdx}" style="width:auto;margin-left:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'selected_proxy',this.value)">
+        <option value="" ${!p.selected_proxy?'selected':''}>🔌 直连</option>
+        ${proxiesList.map(px => `<option value="${esc(px.url)}" ${p.selected_proxy===px.url?'selected':''}>🔗 ${esc(px.name||px.url.slice(0,30))}</option>`).join('')}
       </select>
-      <select style="width:auto;margin-left:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value));renderDetail()">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||60)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
+      <select style="width:auto;padding:6px 8px;font-size:13px;color:var(--text2);align-self:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;outline:none;cursor:pointer" onchange="updField(${selectedIdx},'timeout',parseInt(this.value))">${[30,60,120,300].map(t => `<option value="${t}" ${t===(p.timeout||60)?'selected':''}>超时: ${t}s</option>`).join('')}</select>
     </div>
   </div>`;
   // DOM 已插入后立刻 tick 一次，避免切走再切回时短暂停留在「0s」错值
@@ -1100,7 +1099,7 @@ async function loadProviderLogs(name) {
 }
 
 function addProvider() {
-  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '', timeout: 60, extra_headers: {} });
+  providersData.push({ name: '', type: 'openai', base_url: '', api_keys: [], models: [], selected_model: '', source_url: '', timeout: 60, extra_headers: {}, selected_proxy: '' });
   selectedIdx = providersData.length - 1;
   // 新增 provider 没有快照，checkDirty 会自动标记为 dirty
   checkDirty(selectedIdx);
@@ -1261,7 +1260,8 @@ async function saveConfig(silent) {
       name: p.name, type: p.type||'openai', base_url: p.base_url,
       api_keys: p.api_keys||[], models: p.models||[], selected_model: p.selected_model||'',
       source_url: p.source_url||'', timeout: p.timeout||60,
-      extra_headers: p.extra_headers||{}
+      extra_headers: p.extra_headers||{},
+      selected_proxy: p.selected_proxy||''
     })),
     selected_idx: selectedIdx,
     proxies: proxiesList
@@ -1782,8 +1782,8 @@ async function validateSingle(name, quizMode = false) {
     // 把 provider 完整信息一起传过去，这样新增未保存的也能验证
     const p = providersData.find(x => x.name === name);
     const payload = p
-      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined }
-      : { name, stream, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined };
+      ? { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: p.selected_proxy || undefined }
+      : { name, stream, prompt: quiz ? quiz.question : 'hi', proxy: p?.selected_proxy || undefined };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
 
     // SSE 流式读取：每个 key 验证完立刻显示
@@ -1934,7 +1934,7 @@ async function validateSingleKey(name, keyId, quizMode = false) {
   startPendingTicker();
   const stream = document.getElementById('chkStream').checked;
   try {
-    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: selectedProxy || undefined, key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
+    const payload = { name, stream, base_url: p.base_url, api_keys: p.api_keys, type: p.type || 'openai', model: p.selected_model || '', timeout: p.timeout || 60, extra_headers: p.extra_headers || {}, prompt: quiz ? quiz.question : 'hi', proxy: p.selected_proxy || undefined, key_id: keyId, key_index: allKeys.findIndex(k => k.key_id === keyId) };
     const resp = await fetch(`${API}/api/validate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     // 检查是否为 SSE 流（后端 key_id 找不到时返回 JSON 错误而非 SSE）
     const ct = resp.headers.get('Content-Type') || '';
@@ -2594,8 +2594,12 @@ async function addProxy() {
   await saveProxies();
 }
 async function delProxy(idx) {
+  const removedUrl = proxiesList[idx]?.url;
   proxiesList.splice(idx, 1);
-  // 如果删的正好是当前选中的代理，切回直连
+  // 如果删的代理正被某 provider 使用，清回直连
+  if (removedUrl) {
+    providersData.forEach((p, i) => { if (p.selected_proxy === removedUrl) { p.selected_proxy = ''; checkDirty(i); } });
+  }
   renderProxyList();
   await saveProxies();
   if (selectedIdx >= 0) renderDetail(); // 刷新代理下拉

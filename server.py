@@ -282,6 +282,7 @@ def load_config():
             p.setdefault("selected_model", "")
             p.setdefault("source_url", "")
             p.setdefault("api_keys", [])
+            p.setdefault("selected_proxy", "")
             p.setdefault("timeout", 60)
         cfg["providers"] = providers
         cfg.setdefault("stream", False)
@@ -713,6 +714,7 @@ async def handle_save_config(request):
             "source_url": p.get("source_url", ""),
             "timeout": p.get("timeout", 60),
             "extra_headers": p.get("extra_headers", {}),
+            "selected_proxy": p.get("selected_proxy", ""),
             "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
