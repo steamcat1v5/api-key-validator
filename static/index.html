@@ -1234,9 +1234,11 @@ async function saveProvider(i) {
       name: pp.name, type: pp.type||'openai', base_url: pp.base_url,
       api_keys: pp.api_keys||[], models: pp.models||[], selected_model: pp.selected_model||'',
       source_url: pp.source_url||'', timeout: pp.timeout||60,
-      extra_headers: pp.extra_headers||{}
+      extra_headers: pp.extra_headers||{},
+      selected_proxy: pp.selected_proxy||''
     })),
-    selected_idx: selectedIdx
+    selected_idx: selectedIdx,
+    proxies: proxiesList
   };
   try {
     const resp = await fetch(`${API}/api/config`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
