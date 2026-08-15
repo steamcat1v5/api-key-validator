@@ -446,6 +446,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
         </div>
       </div>
     </div>
+    <button class="btn btn-secondary" onclick="clearResult()">🧹 清除结果</button>
     <button class="btn btn-secondary" onclick="clearLogs()">🗑️ 清空日志</button>
   </div>
 
@@ -2239,6 +2240,30 @@ async function clearLogs() {
   try {
     await fetch(`${API}/api/clear-logs`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: p.name}) });
   } catch(e) {}
+}
+
+async function clearResult() {
+  const p = providersData[selectedIdx];
+  if (!p) { showToast('⚠️ 请先选择一个 Provider', 'error', 3000); return; }
+  const hasResult = !!validateResults[p.name];
+  if (!hasResult) { showToast('ℹ️ 当前没有可清除的测试结果', 'info', 3000); return; }
+  if (!confirm(`确定要清除「${p.name}」的测试结果吗？\n\n这将删除该 Provider 的已保存验证/智测结果（含多 key 表格数据），Provider 配置本身不受影响。`)) return;
+  // 前端立即清除
+  delete validateResults[p.name];
+  lastQuizKeyId = '';
+  lastResultKeyId = '';
+  lastResultIsQuiz = false;
+  // 清除 localStorage 中的智测相关状态
+  localStorage.removeItem(`lastQuizKeyId_${p.name}`);
+  localStorage.removeItem(`lastResultKeyId_${p.name}`);
+  renderAll();
+  showToast('🧹 已清除测试结果', 'success');
+  // 后端也清除（持久化的 last_status）
+  try {
+    const resp = await fetch(`${API}/api/clear-result`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: p.name}) });
+    const data = await resp.json();
+    if (!data.ok) showToast(`⚠️ 后端清除失败: ${data.error || '未知错误'}`, 'error');
+  } catch(e) { showToast('⚠️ 后端请求失败: ' + e.message, 'error'); }
 }
 
 // ─── 复制 curl 命令 ─────────────────

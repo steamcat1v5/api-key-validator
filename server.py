@@ -1402,6 +1402,23 @@ async def handle_clear_logs(request):
     return web.json_response({"ok": True})
 
 
+async def handle_clear_result(request):
+    """清除指定 provider 的验证/智测结果（last_status），不删 provider 本身。
+    用于多 key 测试后 key 数量变化导致 multi_results 行数不一致的场景。
+    """
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        return web.json_response({"error": "缺少 name 参数"}, status=400)
+    cfg = load_config()
+    for p in cfg.get("providers", []):
+        if p.get("name") == name:
+            p.pop("last_status", None)  # 删除整个 last_status（含 multi_results）
+            save_config(cfg)
+            return web.json_response({"ok": True})
+    return web.json_response({"error": f"provider '{name}' 未找到"}, status=404)
+
+
 mimetypes.add_type('font/ttf', '.ttf')
 mimetypes.add_type('font/woff2', '.woff2')
 
@@ -1738,6 +1755,7 @@ app.router.add_post("/api/stream", handle_stream)
 app.router.add_post("/api/delete-provider", handle_delete_provider)
 app.router.add_get("/api/logs", handle_get_logs)
 app.router.add_post("/api/clear-logs", handle_clear_logs)
+app.router.add_post("/api/clear-result", handle_clear_result)
 
 if __name__ == "__main__":
     print("🐱 API Key Validator 启动在 http://0.0.0.0:8899")
