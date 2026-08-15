@@ -353,10 +353,22 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
 .log-detail-content { padding: 8px 12px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text2); flex: 1; }
 .log-provider-tag { display: inline-block; background: var(--accent); color: #fff; font-size: 9.5px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; font-weight: 500; }
 
-.toast { position: fixed; bottom: 20px; right: 20px; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s; z-index: 999; }
-.toast.show { opacity: 1; }
-.toast.success { background: #00cec933; color: var(--green); border: 1px solid #00cec944; }
-.toast.error { background: #ff6b6b33; color: var(--red); border: 1px solid #ff6b6b44; }
+/* ─── 顶部滑出通知（Ant Design Message 风格）─── */
+.msg-container { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; padding-top: 12px; }
+.msg-item {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  pointer-events: auto; max-width: 80vw;
+  transform: translateY(-100%); opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.2,0,0,1), opacity 0.3s ease;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  backdrop-filter: blur(6px);
+}
+.msg-item.show { transform: translateY(0); opacity: 1; }
+.msg-item.hide { transform: translateY(-100%); opacity: 0; }
+.msg-item.success { background: rgba(0,206,201,0.15); color: var(--green); border: 1px solid rgba(0,206,201,0.35); }
+.msg-item.error { background: rgba(255,107,107,0.15); color: var(--red); border: 1px solid rgba(255,107,107,0.35); }
+.msg-item.info { background: rgba(100,149,237,0.15); color: #6495ed; border: 1px solid rgba(100,149,237,0.35); }
 
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -476,7 +488,7 @@ input.model-input { width: 100%; padding: 8px 10px; font-size: 13px; font-family
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="msg-container" id="msgContainer"></div>
 
 <script>
 const API = '';
@@ -2507,10 +2519,24 @@ function copyKey(name) {
   document.body.removeChild(ta);
 }
 
-function showToast(msg, type='success') {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.className = `toast show ${type}`;
-  setTimeout(() => t.className = 'toast', 3000);
+function showToast(msg, type='success', duration=3000) {
+  const container = document.getElementById('msgContainer');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = `msg-item ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  // 下一帧触发滑入动画
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.classList.add('show'); }));
+  // 自动消失
+  const remove = () => {
+    el.classList.remove('show');
+    el.classList.add('hide');
+    setTimeout(() => el.remove(), 300);
+  };
+  if (duration > 0) setTimeout(remove, duration);
+  // 支持手动点击关闭
+  el.addEventListener('click', remove);
 }
 
 init();
