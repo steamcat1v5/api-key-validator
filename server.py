@@ -38,8 +38,8 @@ _key_start_times = {}
 # 全局 set: (name, key_id) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
 _running_quiz_keys = set()
 
-# 全局锁：串行化并发单 key 重测时的 config 读取-合并-写入，防止旧快照覆盖
-_config_lock = asyncio.Lock()
+# 全局锁：串行化同一 provider 并发单 key 重测的 result 读取-合并-写入
+_result_lock = asyncio.Lock()
 
 
 def _key_preview(ak):
@@ -1181,8 +1181,8 @@ async def handle_validate(request):
     # 持久化验证结果到 results/{name}.json（独立于 config.yml）
     # cancelled 也算一个有效 result 入 multi_results，与前端表格结构一致
     if provider and all_results:
-        # 加锁串行化：重读最新 result → 合并 → 写回，防止并发单 key 重测时旧快照覆盖
-        async with _config_lock:
+        # 加锁串行化：重读最新 result → 合并 → 写回，防止同一 provider 并发单 key 重测时旧快照覆盖
+        async with _result_lock:
             existing_result = load_result(name)
             # 优先取第一个非 cancelled 结果作为展示主体
             first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
