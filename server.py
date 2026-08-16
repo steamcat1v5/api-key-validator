@@ -37,6 +37,9 @@ _key_start_times = {}
 # 全局 set: (name, key_id) -> 正在智测的 key（用于刷新恢复时区分验证/智测）
 _running_quiz_keys = set()
 
+# 全局锁：串行化并发单 key 重测时的 config 读取-合并-写入，防止旧快照覆盖
+_config_lock = asyncio.Lock()
+
 
 def _key_preview(ak):
     """统一的 key 脱敏预览：长 key 仅展示前 8 + 后 4，短 key 原样返回"""
@@ -1132,59 +1135,67 @@ async def handle_validate(request):
     # 持久化 last_status 到 config（含 multi_results）
     # cancelled 也算一个有效 result 入 multi_results，与前端表格结构一致
     if provider and all_results:
-        # 优先取第一个非 cancelled 结果作为展示主体
-        first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
-        merged_multi = all_results  # 默认用本次验证结果
-        # 单 key 重测：合并到现有 multi_results 中（按 key_id 匹配替换）
-        if orig_key_id is not None and provider.get("last_status", {}).get("multi_results"):
-            existing = list(provider["last_status"]["multi_results"])
-            new_result = all_results[0]
-            new_kid = new_result.get("key_id", orig_key_id)
-            # 按 key_id 查找并替换（如果没找到就追加）
-            replaced = False
-            for j, m in enumerate(existing):
-                m_kid = m.get("key_id")
-                match = (m_kid == new_kid) or (
-                    not m_kid and orig_key_index is not None and m.get("key_index") == orig_key_index)
-                if match:
-                    # 保留旧的 quiz 评分结果（新验证不应冲掉已完成的智测评分）
-                    if m.get("quiz_correct") is not None and new_result.get("quiz_correct") is None:
-                        new_result["quiz_correct"] = m["quiz_correct"]
-                    if m.get("quiz_reason") and not new_result.get("quiz_reason"):
-                        new_result["quiz_reason"] = m["quiz_reason"]
-                    # 如果新验证失败（429/错误等）但旧的有 content，保留旧 content
-                    # 让详情列继续显示之前的应答
-                    if not new_result.get("content") and m.get("content"):
-                        new_result["content"] = m["content"]
-                    existing[j] = new_result
-                    replaced = True
-                    break
-            if not replaced:
-                # key_id 不在现有列表中（可能是新增的 key），追加到末尾
-                existing.append(new_result)
-            merged_multi = existing
-            # 重新计算 overall status
-            merged_statuses = [r.get("status", "error") for r in merged_multi]
-            if all(s == "available" for s in merged_statuses):
-                overall_status = "available"
-            elif any(s == "available" for s in merged_statuses):
-                overall_status = "mixed"
+        # 加锁串行化：重读最新 config → 合并 → 写回，防止并发单 key 重测时旧快照覆盖
+        async with _config_lock:
+            fresh_cfg = load_config()
+            fresh_providers = fresh_cfg.get("providers", [])
+            fresh_provider = next((p for p in fresh_providers if p.get("name") == name), None)
+            if fresh_provider:
+                provider = fresh_provider
+                cfg = fresh_cfg
+            # 优先取第一个非 cancelled 结果作为展示主体
+            first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
+            merged_multi = all_results  # 默认用本次验证结果
+            # 单 key 重测：合并到现有 multi_results 中（按 key_id 匹配替换）
+            if orig_key_id is not None and provider.get("last_status", {}).get("multi_results"):
+                existing = list(provider["last_status"]["multi_results"])
+                new_result = all_results[0]
+                new_kid = new_result.get("key_id", orig_key_id)
+                # 按 key_id 查找并替换（如果没找到就追加）
+                replaced = False
+                for j, m in enumerate(existing):
+                    m_kid = m.get("key_id")
+                    match = (m_kid == new_kid) or (
+                        not m_kid and orig_key_index is not None and m.get("key_index") == orig_key_index)
+                    if match:
+                        # 保留旧的 quiz 评分结果（新验证不应冲掉已完成的智测评分）
+                        if m.get("quiz_correct") is not None and new_result.get("quiz_correct") is None:
+                            new_result["quiz_correct"] = m["quiz_correct"]
+                        if m.get("quiz_reason") and not new_result.get("quiz_reason"):
+                            new_result["quiz_reason"] = m["quiz_reason"]
+                        # 如果新验证失败（429/错误等）但旧的有 content，保留旧 content
+                        # 让详情列继续显示之前的应答
+                        if not new_result.get("content") and m.get("content"):
+                            new_result["content"] = m["content"]
+                        existing[j] = new_result
+                        replaced = True
+                        break
+                if not replaced:
+                    # key_id 不在现有列表中（可能是新增的 key），追加到末尾
+                    existing.append(new_result)
+                merged_multi = existing
+                # 重新计算 overall status
+                merged_statuses = [r.get("status", "error") for r in merged_multi]
+                if all(s == "available" for s in merged_statuses):
+                    overall_status = "available"
+                elif any(s == "available" for s in merged_statuses):
+                    overall_status = "mixed"
+                else:
+                    overall_status = merged_statuses[0]
+                # 取第一个 available 的结果作为展示主体
+                first = next((r for r in merged_multi if r.get("status") == "available"), first)
             else:
-                overall_status = merged_statuses[0]
-            # 取第一个 available 的结果作为展示主体
-            first = next((r for r in merged_multi if r.get("status") == "available"), first)
-        else:
-            merged_multi = all_results
-        provider["last_status"] = {
-            "status": overall_status,
-            "model": first.get("model", model),
-            "content": first.get("content"),
-            "elapsed": first.get("elapsed"),
-            "error": first.get("error"),
-            "usage": first.get("usage"),
-            "multi_results": merged_multi,
-        }
-        save_config(cfg)
+                merged_multi = all_results
+            provider["last_status"] = {
+                "status": overall_status,
+                "model": first.get("model", model),
+                "content": first.get("content"),
+                "elapsed": first.get("elapsed"),
+                "error": first.get("error"),
+                "usage": first.get("usage"),
+                "multi_results": merged_multi,
+            }
+            save_config(cfg)
 
     # 推送最终汇总事件
     summary = {
