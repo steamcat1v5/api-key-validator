@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent / "config.yml"
 LOGS_DIR = Path(__file__).parent / "logs"
+RESULTS_DIR = Path(__file__).parent / "results"
 MAX_LOG_FILES_PER_PROVIDER = 3
 
 # ─── 单 key 取消机制 ──────────────────────────────────────
@@ -273,6 +274,48 @@ def _rename_provider_log_files(old_name, new_name):
             logger.warning("Failed to rename log %s → %s: %s", f.name, new_path.name, e)
     if renamed:
         logger.info("Renamed %d log file(s): %s → %s", renamed, safe_old, safe_new)
+
+
+# ─── 验证结果存储（独立于 config.yml）──────────────────────
+# 每个 provider 的 last_status（含 multi_results）存为 results/{safe_name}.json
+# config.yml 只存配置项，不再混入运行数据
+
+def _result_path(provider_name):
+    """返回 provider 对应的 result json 文件路径"""
+    RESULTS_DIR.mkdir(exist_ok=True)
+    return RESULTS_DIR / f"{safe_filename(provider_name)}.json"
+
+def load_result(provider_name):
+    """读取指定 provider 的 last_status（验证/智测结果），不存在返回 None"""
+    p = _result_path(provider_name)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_result(provider_name, result):
+    """保存指定 provider 的 last_status（原子写入）"""
+    RESULTS_DIR.mkdir(exist_ok=True)
+    p = _result_path(provider_name)
+    tmp = p.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False)
+    tmp.replace(p)
+
+def clear_result(provider_name):
+    """删除指定 provider 的 result 文件"""
+    p = _result_path(provider_name)
+    p.unlink(missing_ok=True)
+
+def rename_result(old_name, new_name):
+    """provider 改名时同步重命名 result 文件"""
+    old_p = _result_path(old_name)
+    new_p = _result_path(new_name)
+    if old_p.exists():
+        old_p.rename(new_p)
 
 
 def load_config():
@@ -669,10 +712,10 @@ async def handle_get_config(request):
     # 防越界
     if selected_idx >= len(providers):
         selected_idx = len(providers) - 1 if providers else -1
-    # 附带每个 provider 的最近验证状态（优先用 config 中持久化的 last_status）
+    # 附带每个 provider 的最近验证状态（从 results/ 目录读取，不再从 config 中取）
     for p in providers:
         if not p.get("last_status"):
-            p["last_status"] = get_provider_last_status(p.get("name", ""))
+            p["last_status"] = load_result(p.get("name", "")) or get_provider_last_status(p.get("name", ""))
         # 预计算每个 key 的 key_id（sha256[:8]），前端直接用，不自己算 hash
         aks = [k.strip() for k in p.get("api_keys", []) if k.strip()]
         p["key_ids"] = [_key_id(ak) for ak in aks]
@@ -704,14 +747,11 @@ async def handle_save_config(request):
     old_key_map = {(p.get("name", ""), p.get("base_url", "")): p.get("api_keys", []) for p in old_providers}
 
     merged = []
-    old_status_map = {p.get("name", ""): p.get("last_status") for p in old_providers}
     for p in new_providers:
         keys = p.get("api_keys", [])
         if not keys or all("***" in k for k in keys):
             lookup_key = (p.get("name", ""), p.get("base_url", ""))
             keys = old_key_map.get(lookup_key, [])
-        # 保留旧 last_status（按 provider name 取，避免同 base_url 互覆盖）
-        ls = p.get("last_status") or old_status_map.get(p.get("name", ""))
         merged.append({
             "name": p.get("name", ""),
             "type": p.get("type", "openai"),
@@ -723,7 +763,6 @@ async def handle_save_config(request):
             "timeout": p.get("timeout", 60),
             "extra_headers": p.get("extra_headers", {}),
             "selected_proxy": p.get("selected_proxy", ""),
-            "last_status": ls,
         })
     # 检测 provider 改名，重命名对应的日志文件
     # 按 (base_url, api_keys 首个) 做指纹匹配，找到旧 name → 新 name 的映射
@@ -737,6 +776,7 @@ async def handle_save_config(request):
         matched = next((p for p in merged if p.get("base_url", "") == old_url and p.get("name", "") not in {op.get("name", "") for op in old_providers}), None)
         if matched:
             _rename_provider_log_files(old_name, matched["name"])
+            rename_result(old_name, matched["name"])
 
     # 检测同名 provider 冲突，自动追加 -1/-2 后缀
     seen_names = {}
@@ -795,6 +835,7 @@ async def handle_update_provider(request):
                     break
         if target is None:
             return web.json_response({"ok": False, "error": f"provider '{name}' 未找到"}, status=404)
+        old_name = target.get("name", "")
         # 增量更新：只更新传入的字段
         update_fields = ["name", "type", "base_url", "api_keys", "models", "selected_model",
                         "source_url", "timeout", "extra_headers", "selected_proxy"]
@@ -806,6 +847,11 @@ async def handle_update_provider(request):
                     if not keys or all("***" in k for k in keys):
                         continue  # 保留旧值
                 target[f] = body[f]
+        # provider 改名时同步重命名 result 文件
+        new_name = target.get("name", "")
+        if new_name != old_name:
+            rename_result(old_name, new_name)
+            _rename_provider_log_files(old_name, new_name)
         save_config(cfg)
         return web.json_response({"ok": True})
     except Exception as e:
@@ -1132,23 +1178,18 @@ async def handle_validate(request):
     else:
         overall_status = statuses[0] if statuses else "error"
 
-    # 持久化 last_status 到 config（含 multi_results）
+    # 持久化验证结果到 results/{name}.json（独立于 config.yml）
     # cancelled 也算一个有效 result 入 multi_results，与前端表格结构一致
     if provider and all_results:
-        # 加锁串行化：重读最新 config → 合并 → 写回，防止并发单 key 重测时旧快照覆盖
+        # 加锁串行化：重读最新 result → 合并 → 写回，防止并发单 key 重测时旧快照覆盖
         async with _config_lock:
-            fresh_cfg = load_config()
-            fresh_providers = fresh_cfg.get("providers", [])
-            fresh_provider = next((p for p in fresh_providers if p.get("name") == name), None)
-            if fresh_provider:
-                provider = fresh_provider
-                cfg = fresh_cfg
+            existing_result = load_result(name)
             # 优先取第一个非 cancelled 结果作为展示主体
             first = next((r for r in all_results if r.get("status") != "cancelled"), all_results[0])
             merged_multi = all_results  # 默认用本次验证结果
             # 单 key 重测：合并到现有 multi_results 中（按 key_id 匹配替换）
-            if orig_key_id is not None and provider.get("last_status", {}).get("multi_results"):
-                existing = list(provider["last_status"]["multi_results"])
+            if orig_key_id is not None and existing_result and existing_result.get("multi_results"):
+                existing = list(existing_result["multi_results"])
                 new_result = all_results[0]
                 new_kid = new_result.get("key_id", orig_key_id)
                 # 按 key_id 查找并替换（如果没找到就追加）
@@ -1186,7 +1227,7 @@ async def handle_validate(request):
                 first = next((r for r in merged_multi if r.get("status") == "available"), first)
             else:
                 merged_multi = all_results
-            provider["last_status"] = {
+            result_data = {
                 "status": overall_status,
                 "model": first.get("model", model),
                 "content": first.get("content"),
@@ -1195,7 +1236,7 @@ async def handle_validate(request):
                 "usage": first.get("usage"),
                 "multi_results": merged_multi,
             }
-            save_config(cfg)
+            save_result(name, result_data)
 
     # 推送最终汇总事件
     summary = {
@@ -1359,6 +1400,11 @@ async def handle_delete_provider(request):
     if idx < 0 or idx >= len(providers):
         return web.json_response({"ok": False, "error": f"索引越界: {idx}/{len(providers)}"}, status=400)
     deleted = providers.pop(idx)
+    deleted_name = deleted.get("name", "")
+    # 同步删除该 provider 的 result 文件和日志
+    if deleted_name:
+        clear_result(deleted_name)
+        clear_provider_logs(deleted_name)
     selected_idx = cfg.get("selected_idx", -1)
     if selected_idx >= len(providers):
         selected_idx = len(providers) - 1 if providers else -1
@@ -1414,20 +1460,15 @@ async def handle_clear_logs(request):
 
 
 async def handle_clear_result(request):
-    """清除指定 provider 的验证/智测结果（last_status），不删 provider 本身。
+    """清除指定 provider 的验证/智测结果，不删 provider 本身。
     用于多 key 测试后 key 数量变化导致 multi_results 行数不一致的场景。
     """
     body = await request.json()
     name = body.get("name", "")
     if not name:
         return web.json_response({"error": "缺少 name 参数"}, status=400)
-    cfg = load_config()
-    for p in cfg.get("providers", []):
-        if p.get("name") == name:
-            p.pop("last_status", None)  # 删除整个 last_status（含 multi_results）
-            save_config(cfg)
-            return web.json_response({"ok": True})
-    return web.json_response({"error": f"provider '{name}' 未找到"}, status=404)
+    clear_result(name)  # 删除 results/{name}.json
+    return web.json_response({"ok": True})
 
 
 mimetypes.add_type('font/ttf', '.ttf')
@@ -1713,37 +1754,32 @@ async def handle_save_quiz_result(request):
     quiz_reason = body.get("quiz_reason", "")
     quiz_score_summary = body.get("quiz_score_summary", "")
     multi_results = body.get("multi_results")
-    cfg = load_config()
-    providers = cfg.get("providers", [])
-    for p in providers:
-        if p.get("name", "") == name:
-            ls = p.get("last_status") or {}
-            mrs = ls.get("multi_results") or []
-            if not mrs and multi_results:
-                mrs = multi_results
-                ls["multi_results"] = multi_results
-            if mrs:
-                # 按 key_id 更新对应 key 的 quiz 状态（fallback 到 key_index）
-                if multi_results:
-                    for mr_item in multi_results:
-                        kid = mr_item.get("key_id")
-                        ki = mr_item.get("key_index")
-                        target = None
-                        if kid:
-                            target = next((m for m in mrs if m.get("key_id") == kid), None)
-                        if not target and ki is not None:
-                            target = next((m for m in mrs if m.get("key_index") == ki), None)
-                        if target:
-                            target["quiz_correct"] = mr_item.get("quiz_correct")
-                            target["quiz_reason"] = mr_item.get("quiz_reason", "")
-                else:
-                    mrs[0]["quiz_correct"] = quiz_correct
-                    mrs[0]["quiz_reason"] = quiz_reason
-            ls["quiz_score_summary"] = quiz_score_summary
-            p["last_status"] = ls
-            save_config(cfg)
-            return web.json_response({"ok": True})
-    return web.json_response({"ok": False, "error": "provider not found"}, status=404)
+    # 从 results/{name}.json 读取（不再从 config 中取）
+    ls = load_result(name) or {}
+    mrs = ls.get("multi_results") or []
+    if not mrs and multi_results:
+        mrs = multi_results
+        ls["multi_results"] = multi_results
+    if mrs:
+        # 按 key_id 更新对应 key 的 quiz 状态（fallback 到 key_index）
+        if multi_results:
+            for mr_item in multi_results:
+                kid = mr_item.get("key_id")
+                ki = mr_item.get("key_index")
+                target = None
+                if kid:
+                    target = next((m for m in mrs if m.get("key_id") == kid), None)
+                if not target and ki is not None:
+                    target = next((m for m in mrs if m.get("key_index") == ki), None)
+                if target:
+                    target["quiz_correct"] = mr_item.get("quiz_correct")
+                    target["quiz_reason"] = mr_item.get("quiz_reason", "")
+        else:
+            mrs[0]["quiz_correct"] = quiz_correct
+            mrs[0]["quiz_reason"] = quiz_reason
+    ls["quiz_score_summary"] = quiz_score_summary
+    save_result(name, ls)
+    return web.json_response({"ok": True})
 
 
 app.router.add_get("/static/{tail:.*}", handle_static)
@@ -1768,6 +1804,25 @@ app.router.add_get("/api/logs", handle_get_logs)
 app.router.add_post("/api/clear-logs", handle_clear_logs)
 app.router.add_post("/api/clear-result", handle_clear_result)
 
+def migrate_last_status_to_results():
+    """一次性迁移：将 config.yml 中的 last_status 迁移到 results/{name}.json，
+    并从 config.yml 中清除 last_status 字段。迁移后 config.yml 只含配置项。"""
+    cfg = load_config()
+    providers = cfg.get("providers", [])
+    migrated = 0
+    changed = False
+    for p in providers:
+        ls = p.pop("last_status", None)
+        if ls:
+            save_result(p.get("name", ""), ls)
+            migrated += 1
+            changed = True
+    if changed:
+        save_config(cfg)
+        logger.info("Migrated %d last_status entries from config.yml to results/", migrated)
+
+
 if __name__ == "__main__":
+    migrate_last_status_to_results()
     print("🐱 API Key Validator 启动在 http://0.0.0.0:8899")
     web.run_app(app, host="0.0.0.0", port=8899)

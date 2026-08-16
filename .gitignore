@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 config.yml
 logs/
+results/
 backups/
