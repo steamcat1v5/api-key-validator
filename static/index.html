@@ -1426,7 +1426,7 @@ function renderLiveKeyTableHTML(name) {
       const stopBtn = isGlobalRunning
         ? `<button class="lk-stop" onclick="cancelKey('${escName}', '${k.key_id || k.key_index}', this)">⏹ 停止</button>`
         : `<button class="lk-stop" disabled>${opsLabel}</button>`;
-      return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
+      return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}" data-kid="${esc(k.key_id || k.key_index)}">
         <td class="lk-key">${esc(k.key_preview || '')}</td>
         <td class="lk-status pending" data-started-at="${keyStartedAt}" data-pending-label="${label}">${label}... ${elapsedSec}s</td>
         <td class="lk-elapsed">-</td>
@@ -1477,7 +1477,7 @@ function renderLiveKeyTableHTML(name) {
         + `<button class="lk-retest" title="智测" onclick="validateSingleKey('${escName}', '${k.key_id || k.key_index}', true)" style="margin-left:2px">🧠</button>`;
     const hasDetail = (result.error || result.content || (result.quiz_correct != null));
     const detailClickAttr = hasDetail ? `onclick="showDetailModal(this)" data-full-text="${esc(hoverText)}"` : '';
-    return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}">
+    return `<tr id="${rowId}" data-name="${escName}" data-key-idx="${k.key_index}" data-kid="${esc(k.key_id || k.key_index)}">
       <td class="lk-key" title="${esc(k.key_preview || '')}">${esc(k.key_preview || '')}</td>
       <td class="lk-status ${statusVal}">${statusLabel}</td>
       <td class="lk-elapsed">${elapsedStr}</td>
@@ -1636,10 +1636,45 @@ function updateLiveKeyRow(name, result) {
   const entry = liveKeyTableMap[name];
   if (!entry) return;
   if (!result || result.key_index == null) return;
-  entry.results[result.key_id || result.key_index] = result;
+  const kid = result.key_id || result.key_index;
+  // 如果结果没变化，跳过渲染（避免不必要的 DOM 重建打断 ticker）
+  const old = entry.results[kid];
+  if (old && JSON.stringify(old) === JSON.stringify(result)) return;
+  entry.results[kid] = result;
   if (selectedIdx >= 0 && providersData[selectedIdx] && providersData[selectedIdx].name === name) {
-    renderDetail();
+    // 只更新变化的那一行，不重建整个表格（避免打断 ticker 计时）
+    patchLiveKeyRow(name, kid, result);
   }
+}
+
+// 原地更新单行 DOM，不触发 renderDetail 重建
+function patchLiveKeyRow(name, kid, result) {
+  const tbody = document.querySelector('.live-key-table-wrap tbody');
+  if (!tbody) { renderDetail(); return; }  // fallback
+  const row = tbody.querySelector(`tr[data-kid="${CSS.escape(kid)}"]`);
+  if (!row) { renderDetail(); return; }  // 行不存在，fallback 到全量渲染
+  const elapsedStr = (result.elapsed != null) ? result.elapsed.toFixed(1) + 's' : '-';
+  const statusCell = row.querySelector('.lk-status');
+  const elapsedCell = row.querySelector('.lk-elapsed');
+  const contentCell = row.querySelector('.lk-content');
+  if (statusCell) {
+    const cls = result.status === 'available' ? 'lk-status ok' : result.status === 'cancelled' ? 'lk-status cancelled' : 'lk-status err';
+    statusCell.className = cls;
+    statusCell.textContent = result.status === 'available' ? '✅ 可用' : result.status === 'cancelled' ? '⏹ 取消' : '❌ 失败';
+  }
+  if (elapsedCell) elapsedCell.textContent = elapsedStr;
+  if (contentCell) {
+    let titleText = '';
+    if (result.status === 'available') {
+      titleText = result.content ? result.content.slice(0, 50) : '✅ 可用';
+    } else if (result.error) {
+      titleText = result.error.slice(0, 50);
+    }
+    contentCell.textContent = titleText;
+    contentCell.setAttribute('title', (result.content || result.error || '').slice(0, 200));
+  }
+  row.removeAttribute('data-started-at');
+  row.removeAttribute('data-pending-label');
 }
 
 // 智力测试：key 回答完成后、裁判结果到位前，先标记「评分中」
