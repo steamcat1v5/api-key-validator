@@ -1653,28 +1653,67 @@ function patchLiveKeyRow(name, kid, result) {
   if (!tbody) { renderDetail(); return; }  // fallback
   const row = tbody.querySelector(`tr[data-kid="${CSS.escape(kid)}"]`);
   if (!row) { renderDetail(); return; }  // 行不存在，fallback 到全量渲染
+  const statusVal = result.status || 'error';
+  const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
   const elapsedStr = (result.elapsed != null) ? result.elapsed.toFixed(1) + 's' : '-';
   const statusCell = row.querySelector('.lk-status');
   const elapsedCell = row.querySelector('.lk-elapsed');
-  const contentCell = row.querySelector('.lk-content');
+  const detailCell = row.querySelector('.lk-detail') || row.querySelector('.lk-content');
   if (statusCell) {
-    const cls = result.status === 'available' ? 'lk-status ok' : result.status === 'cancelled' ? 'lk-status cancelled' : 'lk-status err';
-    statusCell.className = cls;
-    statusCell.textContent = result.status === 'available' ? '✅ 可用' : result.status === 'cancelled' ? '⏹ 取消' : '❌ 失败';
+    statusCell.className = `lk-status ${statusVal}`;
+    statusCell.textContent = statusLabel;
+    statusCell.removeAttribute('data-started-at');
+    statusCell.removeAttribute('data-pending-label');
   }
   if (elapsedCell) elapsedCell.textContent = elapsedStr;
-  if (contentCell) {
-    let titleText = '';
-    if (result.status === 'available') {
-      titleText = result.content ? result.content.slice(0, 50) : '✅ 可用';
-    } else if (result.error) {
-      titleText = result.error.slice(0, 50);
+  // 更新详情列
+  if (detailCell) {
+    let detailStr = '';
+    if (result.error) {
+      const errWithElapsed = result.elapsed != null
+        ? `${result.error.slice(0, 50)} (${elapsedStr})`
+        : result.error.slice(0, 60);
+      detailStr = `<span class="lk-err">${esc(errWithElapsed)}</span>`;
+    } else if (result.content) {
+      detailStr = esc(String(result.content).slice(0, 60));
     }
-    contentCell.textContent = titleText;
-    contentCell.setAttribute('title', (result.content || result.error || '').slice(0, 200));
+    // 智测结果叠加
+    let quizBadge = '';
+    if (result.quiz_correct === true) {
+      quizBadge = ` <span style="color:var(--green);font-weight:600">✓ 对</span>`;
+    } else if (result.quiz_correct === false) {
+      quizBadge = ` <span style="color:var(--red);font-weight:600">✗ 错</span>`;
+      if (result.quiz_reason) quizBadge += ` <span class="lk-err" style="font-weight:normal">${esc(result.quiz_reason.slice(0, 80))}</span>`;
+    } else if (result.quiz_reason === 'pending' || result.quiz_correct === 'pending') {
+      quizBadge = ` <span style="color:var(--text2)">⏳ 评分中...</span>`;
+    }
+    detailStr += quizBadge;
+    let hoverText = '';
+    if (result.error) {
+      hoverText = result.error + (result.elapsed != null ? ` (${elapsedStr})` : '');
+    } else if (result.content) {
+      hoverText = String(result.content);
+    }
+    if (result.quiz_correct === true) hoverText += '\n✓ 智测正确';
+    else if (result.quiz_correct === false) hoverText += '\n✗ 智测错误' + (result.quiz_reason ? `: ${result.quiz_reason}` : '');
+    detailCell.innerHTML = detailStr;
+    if (hoverText) {
+      detailCell.setAttribute('title', esc(hoverText));
+      detailCell.setAttribute('data-full-text', esc(hoverText));
+      detailCell.style.cursor = 'pointer';
+      detailCell.setAttribute('onclick', 'showDetailModal(this)');
+    }
   }
-  row.removeAttribute('data-started-at');
-  row.removeAttribute('data-pending-label');
+  // 更新操作列（从停止/验证中 → 测试完成后的按钮）
+  const opsCell = row.querySelector('.lk-ops');
+  if (opsCell && statusVal !== 'cancelled') {
+    const isRunning = busySet.has(name);
+    const retestBtns = isRunning
+      ? `<button class="lk-stop" disabled>已完成</button>`
+      : `<button class="lk-retest" title="验证" onclick="validateSingleKey('${esc(name)}', '${kid}', false)">🔍</button>`
+        + `<button class="lk-retest" title="智测" onclick="validateSingleKey('${esc(name)}', '${kid}', true)" style="margin-left:2px">🧠</button>`;
+    opsCell.innerHTML = retestBtns;
+  }
 }
 
 // 智力测试：key 回答完成后、裁判结果到位前，先标记「评分中」
@@ -2067,6 +2106,7 @@ async function validateSingleKey(name, keyId, quizMode = false) {
               validateResults[name].status = data.status;
             }
             // 清理该 key 的 pending 状态
+            const hadPending = liveKeyTableMap[name]?.pendingKeys && liveKeyTableMap[name].pendingKeys[keyId];
             if (liveKeyTableMap[name]?.pendingKeys) {
               delete liveKeyTableMap[name].pendingKeys[keyId];
               // 如果没有 pending key 了，清理整个 liveKeyTableMap
@@ -2074,7 +2114,14 @@ async function validateSingleKey(name, keyId, quizMode = false) {
                 delete liveKeyTableMap[name];
               }
             }
-            renderAll();
+            // 如果还有其他 key 在 pending，只原地更新当前行（避免重建打断 ticker）
+            // 如果全部完成了，全量 renderAll 切换到固化模式
+            if (liveKeyTableMap[name]) {
+              // 还有 pending key，patchLiveKeyRow 已经在 key_done 时更新了行
+              // 这里只需更新 validateResults 的数据（不渲染）
+            } else {
+              renderAll();
+            }
             if (quizMode && finalMulti) {
               // 单 key 智测：只把当前 key 的结果发给裁判，而非全部 19 个
               const singleQuizMulti = finalMulti.filter(r => r.key_id === keyId && r.ok && r.content);
@@ -2119,8 +2166,10 @@ async function validateSingleKey(name, keyId, quizMode = false) {
     }
     renderAll();
     showToast('❌ 验证失败: ' + e.message, 'error');
+    return;
   }
-  renderAll();
+  // 函数结束：如果没有其他 pending key 了就全量渲染，否则原地更新已足够
+  if (!liveKeyTableMap[name]) renderAll();
 }
 
 async function validateAll() {
