@@ -511,6 +511,7 @@ let logTabStates = {}; // entryId -> 'request' | 'response'
 let logEntryCounter = 0;
 let validateResults = {}; // name -> result
 let busy = false;
+let _batchRenderPending = false;  // 批量验证中 renderAll 节流标志
 let busyProvider = null; // 正在验证/获取的 provider 名称
 let busySet = new Set(); // 批量验证中尚未完成的 provider 集合
 let dirtyMap = {}; // idx -> true (该 provider 有未保存的改动)
@@ -2220,7 +2221,14 @@ async function validateAll() {
               timeoutBumps++;
             }
             busySet.delete(r.name); // 完成的 provider 解除禁用
-            renderAll();
+            // 节流批量验证中 provider 的渲染（多个并发完成时多个 renderAll 合并为一次）
+            if (!_batchRenderPending) {
+              _batchRenderPending = true;
+              requestAnimationFrame(() => {
+                _batchRenderPending = false;
+                renderAll();
+              });
+            }
           }
         } catch(e) {}
       }
@@ -2375,16 +2383,15 @@ function switchLogTab(entryId, tab) {
   logTabStates[entryId] = tab;
   const reqEl = document.getElementById('log-req-' + entryId);
   const respEl = document.getElementById('log-resp-' + entryId);
-  // 更新 tab active 状态
-  const tabs = document.querySelectorAll('.log-detail-tab');
-  tabs.forEach(t => {
-    if (t.getAttribute('onclick') === `switchLogTab(${entryId},'request')`) {
-      t.classList.toggle('active', tab === 'request');
-    }
-    if (t.getAttribute('onclick') === `switchLogTab(${entryId},'response')`) {
-      t.classList.toggle('active', tab === 'response');
-    }
-  });
+  // 直接精确定位 tab（不遍历全部 .log-detail-tab）
+  const entryDiv = (reqEl || respEl)?.closest('.log-entry');
+  if (entryDiv) {
+    const tabs = entryDiv.querySelectorAll('.log-detail-tab');
+    tabs.forEach(t => {
+      if (t.textContent === 'Request') t.classList.toggle('active', tab === 'request');
+      else if (t.textContent === 'Response') t.classList.toggle('active', tab === 'response');
+    });
+  }
   if (reqEl) reqEl.style.display = tab === 'request' ? '' : 'none';
   if (respEl) respEl.style.display = tab === 'response' ? '' : 'none';
 }
