@@ -1651,7 +1651,7 @@ function updateLiveKeyRow(name, result) {
 function patchLiveKeyRow(name, kid, result) {
   const tbody = document.querySelector('.live-key-table-wrap tbody');
   if (!tbody) { renderDetail(); return; }  // fallback
-  const row = tbody.querySelector(`tr[data-kid="${CSS.escape(kid)}"]`);
+  const row = tbody.querySelector(`tr[data-kid="${CSS.escape(String(kid))}"]`);
   if (!row) { renderDetail(); return; }  // 行不存在，fallback 到全量渲染
   const statusVal = result.status || 'error';
   const statusLabel = KEY_STATUS_SYMBOL[statusVal] || statusVal;
@@ -2270,7 +2270,18 @@ function addLogEntry(l) {
   if (currentP && currentP.name === providerName) renderLog();
 }
 
+// renderLog 节流：多次 addLogEntry 在同一帧内只渲染一次
+let _logRenderPending = false;
 function renderLog() {
+  if (_logRenderPending) return;  // 已排队，跳过
+  _logRenderPending = true;
+  requestAnimationFrame(() => {
+    _logRenderPending = false;
+    _renderLogNow();
+  });
+}
+
+function _renderLogNow() {
   const el = document.getElementById('logBody');
   const entries = getCurrentLogEntries();
   if (entries.length === 0) { el.innerHTML = '<span style="color:var(--text2);font-style:italic">等待操作...</span>'; return; }
