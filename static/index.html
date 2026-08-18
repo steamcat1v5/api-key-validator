@@ -505,6 +505,8 @@ let providersData = [];
 let proxiesList = []; // 代理列表 [{name, url}]
 let selectedIdx = -1;
 let logEntriesByProvider = {}; // name -> [entries]
+
+const MAX_LOG_ENTRIES = 50;  // 日志条目上限，超出则截断旧条目
 let logTabStates = {}; // entryId -> 'request' | 'response'
 let logEntryCounter = 0;
 let validateResults = {}; // name -> result
@@ -1080,7 +1082,7 @@ async function selectProvider(i) {
   // 切换 provider 时恢复该 provider 的 lastQuizKeyId
   restoreLastQuizKeyIdx();
   renderAll();
-  renderLog(); // 立即显示当前 provider 的日志（可能是空）
+  _renderLogFullRebuild(); // 立即显示当前 provider 的日志（可能是空）
   // 持久化选中索引
   try {
     await fetch(`${API}/api/select-provider`, {
@@ -1095,7 +1097,7 @@ async function selectProvider(i) {
 async function loadProviderLogs(name) {
   if (!name) return;
   // 如果已经有缓存的日志，直接刷新显示
-  if (logEntriesByProvider[name]) { renderLog(); return; }
+  if (logEntriesByProvider[name]) { _renderLogFullRebuild(); return; }
   try {
     const resp = await fetch(`${API}/api/logs?name=${encodeURIComponent(name)}`);
     const data = await resp.json();
@@ -1107,7 +1109,7 @@ async function loadProviderLogs(name) {
     logEntriesByProvider[name] = entries;
     // 只有当前选中的 provider 才刷新显示
     const currentP = providersData[selectedIdx];
-    if (currentP && currentP.name === name) renderLog();
+    if (currentP && currentP.name === name) _renderLogFullRebuild();
   } catch(e) {}
 }
 
@@ -2263,58 +2265,109 @@ function addLogEntry(l) {
   const now = new Date().toLocaleTimeString('zh-CN', {hour12:false});
   const entryId = ++logEntryCounter;
   if (!logEntriesByProvider[providerName]) logEntriesByProvider[providerName] = [];
-  logEntriesByProvider[providerName].unshift({ id: entryId, time: now, ...l, provider: providerName, url: l.url || '' });
+  const entry = { id: entryId, time: now, ...l, provider: providerName, url: l.url || '' };
+  logEntriesByProvider[providerName].unshift(entry);
   logTabStates[entryId] = 'response'; // 默认 Response tab
-  // 只在当前选中 provider 时刷新显示
+  // 截断数据层（保持数组不超过 MAX_LOG_ENTRIES）
+  if (logEntriesByProvider[providerName].length > MAX_LOG_ENTRIES) {
+    logEntriesByProvider[providerName].length = MAX_LOG_ENTRIES;
+  }
+  // 只在当前选中 provider 时增量渲染
   const currentP = providersData[selectedIdx];
-  if (currentP && currentP.name === providerName) renderLog();
+  if (currentP && currentP.name === providerName) {
+    _pendingNewEntries.push(entry);
+    renderLog();  // 节流：一帧内只真正渲染一次
+  }
 }
 
 // renderLog 节流：多次 addLogEntry 在同一帧内只渲染一次
 let _logRenderPending = false;
+let _pendingNewEntries = [];  // 待 batch 渲染的新条目
 function renderLog() {
+  // 真正新的条目已在 addLogEntry 中推入 _pendingNewEntries
   if (_logRenderPending) return;  // 已排队，跳过
   _logRenderPending = true;
   requestAnimationFrame(() => {
     _logRenderPending = false;
-    _renderLogNow();
+    _flushPendingLogs();
   });
 }
 
-function _renderLogNow() {
+// 新增日志：只 prepend 新节点 + 截断超限条目，不全量重建
+function _flushPendingLogs() {
+  const el = document.getElementById('logBody');
+  if (!el) return;
+  if (_pendingNewEntries.length === 0) return;
+  const newEntries = _pendingNewEntries;
+  _pendingNewEntries = [];
+
+  // 如果日志区是空的占位符，先清空
+  if (el.querySelector('.log-entry') === null && el.innerHTML.includes('等待操作')) {
+    el.innerHTML = '';
+  }
+
+  // 为每条新条目生成 DOM 并 prepend
+  const frag = document.createDocumentFragment();
+  for (const e of newEntries) {
+    const div = document.createElement('div');
+    div.className = 'log-entry';
+    div.dataset.logId = e.id;
+    div.innerHTML = _buildLogEntryInner(e);
+    frag.appendChild(div);
+  }
+  // 新日志插到最前面（unshift 语义）
+  el.insertBefore(frag, el.firstChild);
+  // 截断超限条目（保留最近 MAX_LOG_ENTRIES 条）
+  const entries = getCurrentLogEntries();
+  if (entries.length > MAX_LOG_ENTRIES) {
+    const removeCount = entries.length - MAX_LOG_ENTRIES;
+    for (let i = 0; i < removeCount; i++) {
+      entries.pop();  // 同步从数组删除
+    }
+    // 删除溢出的 DOM 节点（最末尾的）
+    const allEntries = el.querySelectorAll('.log-entry');
+    for (let i = allEntries.length - 1; i >= MAX_LOG_ENTRIES; i--) {
+      allEntries[i].remove();
+    }
+  }
+}
+
+function _buildLogEntryInner(e) {
+  const s = parseInt(e.status) || 0;
+  const sc = s >= 200 && s < 300 ? 's2xx' : s >= 400 && s < 500 ? 's4xx' : s >= 500 ? 's5xx' : 's0';
+  const mc = (e.method || 'GET').toUpperCase();
+  let detailHTML = '';
+  if (e.detail) {
+    const { request, response } = parseDetail(e.detail);
+    const activeTab = logTabStates[e.id] || 'response';
+    const reqActive = activeTab === 'request' ? 'active' : '';
+    const respActive = activeTab === 'response' ? 'active' : '';
+    const reqDisplay = activeTab === 'request' ? '' : 'display:none';
+    const respDisplay = activeTab === 'response' ? '' : 'display:none';
+    detailHTML = `<div class="log-detail">
+      <div class="log-detail-tabs">
+        <div class="log-detail-tab ${reqActive}" onclick="switchLogTab(${e.id},'request')">Request</div>
+        <div class="log-detail-tab ${respActive}" onclick="switchLogTab(${e.id},'response')">Response</div>
+      </div>
+      ${request ? `<div class="log-detail-content" id="log-req-${e.id}" style="${reqDisplay}">${esc(request)}</div>` : ''}
+      ${response ? `<div class="log-detail-content" id="log-resp-${e.id}" style="${respDisplay}">${esc(response)}</div>` : ''}
+    </div>`;
+  }
+  return `<span class="log-time">${e.time}</span>
+    ${e.provider ? `<span class="log-provider-tag">${esc(e.provider)}</span>` : ''}
+    <span class="log-method ${mc}">${mc}</span>
+    <span class="log-url">${esc(e.url)}</span>
+    ${e.status ? `<span class="log-status ${sc}">${e.status}</span>` : ''}
+    ${detailHTML}`;
+}
+
+// 全量重建日志（用于切换 provider / 清空日志等场景）
+function _renderLogFullRebuild() {
+  _pendingNewEntries = [];  // 清空待增量渲染的队列（避免混淆 provider）
   const el = document.getElementById('logBody');
   const entries = getCurrentLogEntries();
   if (entries.length === 0) { el.innerHTML = '<span style="color:var(--text2);font-style:italic">等待操作...</span>'; return; }
-  el.innerHTML = entries.map(e => {
-    const s = parseInt(e.status) || 0;
-    const sc = s >= 200 && s < 300 ? 's2xx' : s >= 400 && s < 500 ? 's4xx' : s >= 500 ? 's5xx' : 's0';
-    const mc = (e.method || 'GET').toUpperCase();
-    let detailHTML = '';
-    if (e.detail) {
-      const { request, response } = parseDetail(e.detail);
-      const activeTab = logTabStates[e.id] || 'response';
-      const reqActive = activeTab === 'request' ? 'active' : '';
-      const respActive = activeTab === 'response' ? 'active' : '';
-      const reqDisplay = activeTab === 'request' ? '' : 'display:none';
-      const respDisplay = activeTab === 'response' ? '' : 'display:none';
-      detailHTML = `<div class="log-detail">
-        <div class="log-detail-tabs">
-          <div class="log-detail-tab ${reqActive}" onclick="switchLogTab(${e.id},'request')">Request</div>
-          <div class="log-detail-tab ${respActive}" onclick="switchLogTab(${e.id},'response')">Response</div>
-        </div>
-        ${request ? `<div class="log-detail-content" id="log-req-${e.id}" style="${reqDisplay}">${esc(request)}</div>` : ''}
-        ${response ? `<div class="log-detail-content" id="log-resp-${e.id}" style="${respDisplay}">${esc(response)}</div>` : ''}
-      </div>`;
-    }
-    return `<div class="log-entry">
-      <span class="log-time">${e.time}</span>
-      ${e.provider ? `<span class="log-provider-tag">${esc(e.provider)}</span>` : ''}
-      <span class="log-method ${mc}">${mc}</span>
-      <span class="log-url">${esc(e.url)}</span>
-      ${e.status ? `<span class="log-status ${sc}">${e.status}</span>` : ''}
-      ${detailHTML}
-    </div>`;
-  }).join('');
+  el.innerHTML = entries.map(e => `<div class="log-entry" data-log-id="${e.id}">${_buildLogEntryInner(e)}</div>`).join('');
   el.scrollTop = 0;
 }
 
@@ -2342,7 +2395,7 @@ async function clearLogs() {
   if (!confirm(`确定要清空「${p.name}」的日志吗？`)) return;
   // 前端立即清空
   logEntriesByProvider[p.name] = [];
-  renderLog();
+  _renderLogFullRebuild();
   // 后端也清空
   try {
     await fetch(`${API}/api/clear-logs`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: p.name}) });
